@@ -1,0 +1,20 @@
+# environment
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# secrets: never commit API keys
+.env
+*.key
+
+# data and large artifacts (reproduce via scripts instead)
+data/raw/
+data/processed/
+logs/
+*.pth
+artifacts/
+
+# OS / IDE
+.vscode/
+.DS_Store
