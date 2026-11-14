@@ -8,6 +8,7 @@ import pytest
 from src.data import parsers
 from src.data.parsers import (
     find_snapshots,
+    parse_commoncrawl,
     parse_openphish,
     parse_phishtank,
     parse_tranco,
@@ -89,6 +90,32 @@ def test_tranco_size_guard(tmp_path, monkeypatch):
     monkeypatch.setattr(parsers, "MAX_UNCOMPRESSED_BYTES", 5)
     with pytest.raises(ValueError):
         list(parse_tranco(path))
+
+
+def test_commoncrawl_parses(tmp_path):
+    path = tmp_path / "commoncrawl_x.csv.gz"
+    write_gz(path, "url,timestamp,registered_domain,tranco_rank\n"
+                   "https://example.com/a,2026-10-05T12:40:20+00:00,example.com,7\n"
+                   ",2026-10-05T12:40:20+00:00,example.com,7\n")
+    skipped = Counter()
+    records = list(parse_commoncrawl(path, "C", skipped))
+    assert len(records) == 1
+    r = records[0]
+    assert (r.source, r.label, r.input_type, r.source_id) == ("commoncrawl", "benign_weak", "full_url", "7")
+    assert r.first_seen == "2026-10-05T12:40:20+00:00" and r.collected_at == "C"
+    assert skipped == {"empty_url": 1}
+    write_gz(path, "a,b\n1,2\n")
+    with pytest.raises(ValueError):
+        list(parse_commoncrawl(path))
+
+
+def test_find_snapshots_commoncrawl(tmp_path):
+    folder = tmp_path / "benign" / "commoncrawl"
+    folder.mkdir(parents=True)
+    (folder / "commoncrawl_20261114T000000Z.csv.gz").write_bytes(b"x")
+    (folder / "commoncrawl_20261114T000000Z.csv.gz.part").write_bytes(b"x")
+    assert [p.name for p in find_snapshots(tmp_path, "commoncrawl")] == [
+        "commoncrawl_20261114T000000Z.csv.gz"]
 
 
 def test_read_collected_at(tmp_path):

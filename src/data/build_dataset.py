@@ -24,6 +24,7 @@ from ..preprocessing.url_normalizer import InvalidURLError, NormalizedURL, norma
 from .parsers import (
     RawRecord,
     find_snapshots,
+    parse_commoncrawl,
     parse_openphish,
     parse_phishtank,
     parse_tranco,
@@ -187,6 +188,23 @@ def build_dataset(raw_root: Path | str, out_dir: Path | str, *, benign_count: in
     inputs["tranco"] = {"files": [tranco_path.name], "records_read": tranco_read,
                         "sampled": len(reservoir.items), "skipped": dict(skipped)}
 
+    # 2b) Common Crawl: benign FULL URLs (all snapshots; duplicates merge)
+    warnings: list[str] = []
+    cc_files = find_snapshots(raw_root, "commoncrawl")
+    skipped = Counter()
+    cc_read = 0
+    for path in cc_files:
+        for rec in parse_commoncrawl(path, read_collected_at(path), skipped):
+            cc_read += 1
+            _ingest(rec, rows, rejected, dup)
+    inputs["commoncrawl"] = {"files": [p.name for p in cc_files], "records_read": cc_read,
+                             "skipped": dict(skipped)}
+    if not cc_files:
+        warnings.append("no_benign_full_urls: benign data is domain-only, so a full-URL model "
+                        "would learn 'has a path means phishing'. Run "
+                        "python -m src.data.commoncrawl_sample")
+        logger.warning("%s", warnings[-1])
+
     # 3) conflict flags
     for (label, _), r in rows.items():
         if label == "phishing":
@@ -200,8 +218,10 @@ def build_dataset(raw_root: Path | str, out_dir: Path | str, *, benign_count: in
     final_rows: list[dict[str, Any]] = []
     for (label, canonical), r in sorted(rows.items()):
         sources = sorted(r["sources"])
-        quality = ("weak_popularity" if label == "benign"
-                   else "community_verified" if "phishtank" in sources else "feed_automated")
+        if label == "benign":
+            quality = "weak_crawl" if "commoncrawl" in sources else "weak_popularity"
+        else:
+            quality = "community_verified" if "phishtank" in sources else "feed_automated"
         out = {col: r.get(col, "") for col in COLUMNS}
         out.update(
             sample_id=hashlib.sha256(f"{label}|{canonical}".encode()).hexdigest()[:16],
@@ -243,11 +263,17 @@ def build_dataset(raw_root: Path | str, out_dir: Path | str, *, benign_count: in
             "host_conflicts": sum(r["host_conflict"] for r in phishing),
         },
         "benign": {
+            "by_source": dict(Counter(r["sources"] for r in benign)),
+            "by_input_type": dict(Counter(r["input_type"] for r in benign)),
+            "with_path_or_query": sum(r["has_path_or_query"] for r in benign),
             "unique_groups": len({r["group"] for r in benign}),
             "host_conflicts": sum(r["host_conflict"] for r in benign),
         },
+        "warnings": warnings,
         "lengths": {
             "phishing_full": _pct(full_lengths),
+            "benign_full": _pct([len(r["model_string"]) for r in benign
+                                 if r["input_type"] == "full_url"]),
             "phishing_host": _pct([len(r["host"]) for r in phishing]),
             "benign_host": _pct([len(r["host"]) for r in benign]),
         },

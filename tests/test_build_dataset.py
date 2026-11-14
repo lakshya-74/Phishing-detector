@@ -117,6 +117,48 @@ def test_end_to_end(tmp_path, main_raw):
     assert "secure-login" not in text and "/a/b" not in text   # no raw URLs in the report
 
 
+def write_commoncrawl(raw, stamp, rows):
+    folder = raw / "benign" / "commoncrawl"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"commoncrawl_{stamp}.csv.gz"
+    body = "url,timestamp,registered_domain,tranco_rank\n" + "".join(
+        f"{u},2026-10-05T12:40:20+00:00,{d},{rank}\n" for u, d, rank in rows)
+    path.write_bytes(gzip.compress(body.encode()))
+    return path
+
+
+def test_without_commoncrawl_warns(tmp_path, main_raw):
+    report = build_dataset(main_raw, tmp_path / "out", benign_count=100)
+    assert report["warnings"] and report["warnings"][0].startswith("no_benign_full_urls")
+    assert report["benign"]["by_input_type"] == {"domain": 20}
+
+
+def test_commoncrawl_adds_benign_full_urls(tmp_path, main_raw):
+    write_commoncrawl(main_raw, "20261114T000000Z", [
+        ("https://popular.org/news/1?id=2", "popular.org", 2),
+        ("https://www.example.com/help", "example.com", 1),
+        ("https://www.example.com/help", "example.com", 1),       # duplicate
+        ("javascript:alert(1)", "x.com", 3),                      # rejected
+    ])
+    out = tmp_path / "out"
+    report = build_dataset(main_raw, out, benign_count=100)
+    assert report["warnings"] == []
+    assert report["inputs"]["commoncrawl"]["records_read"] == 4
+    assert report["final"]["benign"] == 22
+    assert report["duplicates_removed"]["benign"] == 1
+    assert report["benign"]["by_input_type"] == {"domain": 20, "full_url": 2}
+    assert report["benign"]["by_source"]["commoncrawl"] == 2
+    assert report["benign"]["with_path_or_query"] == 2
+    assert report["lengths"]["benign_full"]["n"] == 2
+    rows = {r["canonical"]: r for r in read_rows(out) if r["label"] == "benign"}
+    news = rows["https://popular.org/news/1?id=2"]
+    assert news["label_quality"] == "weak_crawl" and news["input_type"] == "full_url"
+    assert news["tranco_rank"] == "2" and news["group"] == "popular.org"
+    assert news["first_seen"] == "2026-10-05T12:40:20+00:00"
+    assert rows["https://www.example.com/help"]["host_conflict"] == "False"
+    assert rows["popular.org"]["label_quality"] == "weak_popularity"
+
+
 def test_rejected_csv_is_truncated_and_formula_safe(tmp_path):
     raw = tmp_path / "raw"
     write_openphish(raw, "20261112T000000Z", ["=cmd|calc", "http://" + "a" * 300 + " b"])

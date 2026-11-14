@@ -16,11 +16,19 @@ from .download_datasets import SOURCES
 MAX_UNCOMPRESSED_BYTES = 300 * 1024 * 1024
 MAX_CSV_ERRORS = 10_000
 _PHISHTANK_REQUIRED = frozenset({"phish_id", "url", "submission_time", "verified"})
+_COMMONCRAWL_REQUIRED = frozenset({"url", "timestamp", "registered_domain", "tranco_rank"})
+
+# Where each source's snapshots live: (category folder, file suffix).
+# Common Crawl is produced by commoncrawl_sample.py, not by the plain downloader.
+SNAPSHOT_LAYOUT: dict[str, tuple[str, str]] = {
+    **{name: (s.category, s.suffix) for name, s in SOURCES.items()},
+    "commoncrawl": ("benign", ".csv.gz"),
+}
 
 
 @dataclass(frozen=True, slots=True)
 class RawRecord:
-    source: str        # "phishtank" | "openphish" | "tranco"
+    source: str        # "phishtank" | "openphish" | "tranco" | "commoncrawl"
     label: str         # "phishing" | "benign_weak"
     value: str         # raw URL or domain, untouched
     input_type: str   # "full_url" | "domain"
@@ -32,9 +40,9 @@ class RawRecord:
 
 def find_snapshots(raw_root: Path | str, source_name: str) -> list[Path]:
     """All downloaded snapshots of a source, oldest first (timestamped names sort)."""
-    source = SOURCES[source_name]
-    folder = Path(raw_root) / source.category / source.name
-    return sorted(p for p in folder.glob(f"{source.name}_*{source.suffix}") if p.is_file())
+    category, suffix = SNAPSHOT_LAYOUT[source_name]
+    folder = Path(raw_root) / category / source_name
+    return sorted(p for p in folder.glob(f"{source_name}_*{suffix}") if p.is_file())
 
 
 def read_collected_at(data_path: Path | str) -> str:
@@ -93,6 +101,28 @@ def parse_openphish(path: Path | str, collected_at: str = "",
             yield RawRecord(
                 source="openphish", label="phishing", value=value, input_type="full_url",
                 source_id="", first_seen="", collected_at=collected_at, source_file=path.name)
+
+
+def parse_commoncrawl(path: Path | str, collected_at: str = "",
+                      skipped: Counter[str] | None = None) -> Iterator[RawRecord]:
+    """Benign full URLs written by commoncrawl_sample.py. source_id = Tranco rank."""
+    path = Path(path)
+    skipped = Counter() if skipped is None else skipped
+    with gzip.open(path, "rt", encoding="utf-8", errors="replace", newline="") as fh:
+        reader = csv.DictReader(fh)
+        if not _COMMONCRAWL_REQUIRED <= set(reader.fieldnames or []):
+            raise ValueError("unexpected Common Crawl sample header")
+        for row in reader:
+            url = (row.get("url") or "").strip()
+            if not url:
+                skipped["empty_url"] += 1
+                continue
+            rank = (row.get("tranco_rank") or "").strip()
+            yield RawRecord(
+                source="commoncrawl", label="benign_weak", value=url, input_type="full_url",
+                source_id=rank if rank.isdigit() else "",
+                first_seen=(row.get("timestamp") or "").strip(),
+                collected_at=collected_at, source_file=path.name)
 
 
 def parse_tranco(path: Path | str, collected_at: str = "",

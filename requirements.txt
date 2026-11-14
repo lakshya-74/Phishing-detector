@@ -3,6 +3,7 @@ numpy>=2.0
 pandas>=2.2
 scikit-learn>=1.5
 tldextract>=5.1
+idna>=3.6
 fastapi>=0.110
 uvicorn>=0.30
 pydantic>=2.6
