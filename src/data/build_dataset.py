@@ -14,6 +14,7 @@ import json
 import logging
 import random
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -134,11 +135,12 @@ def _write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) ->
 
 
 def build_dataset(raw_root: Path | str, out_dir: Path | str, *, benign_count: int = 200_000,
-                  seed: int = 13, phishing_snapshots: str = "all") -> dict[str, Any]:
+                  homepage_count: int = 20_000, seed: int = 13,
+                  phishing_snapshots: str = "all") -> dict[str, Any]:
     if phishing_snapshots not in ("all", "latest"):
         raise ValueError("phishing_snapshots must be 'all' or 'latest'")
-    if benign_count < 0:
-        raise ValueError("benign_count must be >= 0")
+    if benign_count < 0 or homepage_count < 0:
+        raise ValueError("benign_count and homepage_count must be >= 0")
     raw_root, out_dir = Path(raw_root), Path(out_dir)
 
     phishing_files = {s: find_snapshots(raw_root, s) for s in PHISHING_PARSERS}
@@ -185,8 +187,17 @@ def build_dataset(raw_root: Path | str, out_dir: Path | str, *, benign_count: in
         reservoir.add(rec)
     for rec in sorted(reservoir.items, key=lambda r: int(r.source_id)):
         _ingest(rec, rows, rejected, dup)
+    # Homepages of sampled popular domains as benign FULL URLs. Without them, about half
+    # of the phishing full URLs are bare homepages ("evil.example/") while almost no
+    # benign full URL is, which would teach "a homepage URL means phishing".
+    picks = random.Random(seed + 1).sample(reservoir.items,
+                                           min(homepage_count, len(reservoir.items)))
+    for rec in sorted(picks, key=lambda r: int(r.source_id)):
+        _ingest(replace(rec, source="tranco_homepage", input_type="full_url",
+                        value=f"https://{rec.value.strip()}/"), rows, rejected, dup)
     inputs["tranco"] = {"files": [tranco_path.name], "records_read": tranco_read,
-                        "sampled": len(reservoir.items), "skipped": dict(skipped)}
+                        "sampled": len(reservoir.items), "homepages": len(picks),
+                        "skipped": dict(skipped)}
 
     # 2b) Common Crawl: benign FULL URLs (all snapshots; duplicates merge)
     warnings: list[str] = []
@@ -293,12 +304,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--raw", default="data/raw")
     parser.add_argument("--out", default="data/processed")
     parser.add_argument("--benign-count", type=int, default=200_000)
+    parser.add_argument("--homepage-count", type=int, default=20_000)
     parser.add_argument("--seed", type=int, default=13)
     parser.add_argument("--phishing-snapshots", choices=["all", "latest"], default="all")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     try:
-        report = build_dataset(args.raw, args.out, benign_count=args.benign_count, seed=args.seed,
+        report = build_dataset(args.raw, args.out, benign_count=args.benign_count,
+                               homepage_count=args.homepage_count, seed=args.seed,
                                phishing_snapshots=args.phishing_snapshots)
     except FileNotFoundError as exc:
         logger.error("%s", exc)

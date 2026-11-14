@@ -70,7 +70,7 @@ def main_raw(tmp_path):
 
 def test_end_to_end(tmp_path, main_raw):
     out = tmp_path / "out"
-    report = build_dataset(main_raw, out, benign_count=100)
+    report = build_dataset(main_raw, out, benign_count=100, homepage_count=0)
     rows = read_rows(out)
 
     assert report["final"] == {"phishing": 5, "benign": 20}
@@ -128,7 +128,7 @@ def write_commoncrawl(raw, stamp, rows):
 
 
 def test_without_commoncrawl_warns(tmp_path, main_raw):
-    report = build_dataset(main_raw, tmp_path / "out", benign_count=100)
+    report = build_dataset(main_raw, tmp_path / "out", benign_count=100, homepage_count=0)
     assert report["warnings"] and report["warnings"][0].startswith("no_benign_full_urls")
     assert report["benign"]["by_input_type"] == {"domain": 20}
 
@@ -141,7 +141,7 @@ def test_commoncrawl_adds_benign_full_urls(tmp_path, main_raw):
         ("javascript:alert(1)", "x.com", 3),                      # rejected
     ])
     out = tmp_path / "out"
-    report = build_dataset(main_raw, out, benign_count=100)
+    report = build_dataset(main_raw, out, benign_count=100, homepage_count=0)
     assert report["warnings"] == []
     assert report["inputs"]["commoncrawl"]["records_read"] == 4
     assert report["final"]["benign"] == 22
@@ -177,9 +177,9 @@ def test_sampling_is_seeded_and_exact_size(tmp_path):
     raw = tmp_path / "raw"
     write_openphish(raw, "20261112T000000Z", ["http://a.example/x"])
     write_tranco(raw, "20261112T000000Z", [f"d{i}.com" for i in range(1, 201)])
-    a = build_dataset(raw, tmp_path / "a", benign_count=50, seed=7)
-    b = build_dataset(raw, tmp_path / "b", benign_count=50, seed=7)
-    c = build_dataset(raw, tmp_path / "c", benign_count=50, seed=8)
+    a = build_dataset(raw, tmp_path / "a", benign_count=50, homepage_count=0, seed=7)
+    b = build_dataset(raw, tmp_path / "b", benign_count=50, homepage_count=0, seed=7)
+    c = build_dataset(raw, tmp_path / "c", benign_count=50, homepage_count=0, seed=8)
     pick = lambda out: sorted(r["canonical"] for r in read_rows(tmp_path / out) if r["label"] == "benign")  # noqa: E731
     assert a["final"]["benign"] == b["final"]["benign"] == c["final"]["benign"] == 50
     assert pick("a") == pick("b")
@@ -222,6 +222,21 @@ def test_missing_inputs_and_bad_arguments(tmp_path):
         build_dataset(raw, tmp_path / "o", phishing_snapshots="newest")
     with pytest.raises(ValueError):
         build_dataset(raw, tmp_path / "o", benign_count=-1)
+    with pytest.raises(ValueError):
+        build_dataset(raw, tmp_path / "o", homepage_count=-1)
+
+
+def test_tranco_homepages_become_benign_full_urls(tmp_path, main_raw):
+    out = tmp_path / "out"
+    report = build_dataset(main_raw, out, benign_count=100, homepage_count=5)
+    assert report["inputs"]["tranco"]["homepages"] == 5
+    homepages = [r for r in read_rows(out) if r["sources"] == "tranco_homepage"]
+    assert len(homepages) == 5
+    assert all(r["input_type"] == "full_url" and r["label"] == "benign"
+               and r["canonical"].startswith("https://") and r["canonical"].endswith("/")
+               and r["model_string"] == r["host"] + "/" for r in homepages)
+    again = build_dataset(main_raw, tmp_path / "again", benign_count=100, homepage_count=5)
+    assert again["benign"] == report["benign"]   # seeded: same picks
 
 
 class TestReservoir:

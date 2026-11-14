@@ -80,6 +80,13 @@ SOURCES: dict[str, Source] = {
         license_note="Tranco ranking (Le Pochat et al., NDSS 2019); provider licenses listed at tranco-list.eu",
         id_url="https://tranco-list.eu/top-1m-id",
     ),
+    "url_shorteners": Source(
+        name="url_shorteners", category="reference",
+        url_template="https://raw.githubusercontent.com/PeterDaveHello/url-shorteners/master/list",
+        suffix=".txt",
+        license_note=("PeterDaveHello/url-shorteners, CC BY-SA 4.0. Used only to route opaque "
+                      "redirect links, never as a phishing label."),
+    ),
 }
 
 

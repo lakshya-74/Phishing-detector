@@ -13,8 +13,7 @@ Phishing-detection module of the Bharat AI on-device security assistant.
 | Structural features + scaler (`src/preprocessing/feature_extractor.py`) | done, tested |
 | Feed downloader / parsers / dataset builder (`src/data/`) | done, tested |
 | Benign full-URL sampler, Common Crawl (`src/data/commoncrawl_sample.py`) | done, tested |
-| Shortener / abused-platform handling | not started (next) |
-| Leakage-safe train/val/test split | not started |
+| Cleaning + leakage-safe train/val/test split (`src/data/split_dataset.py`) | done, tested |
 | CNN model, training, evaluation, calibration | not started |
 | Threat intelligence, inference engine, API, ARM deployment | not started |
 
@@ -67,14 +66,39 @@ python -m src.data.commoncrawl_sample
 
 # 3. Merge, normalize and deduplicate everything into data/processed/.
 python -m src.data.build_dataset
+
+# 4. Clean and split into leakage-safe train/val/test (data/processed/splits/).
+python -m src.data.split_dataset
 ```
+
+What step 4 does, and why:
+
+- **Two datasets.** `full_url/` (host + path + query) and `domain/` (hostnames
+  only, for DNS/SNI traffic) are trained separately, so "no path" can never
+  become a shortcut for "benign".
+- **Redirector links removed** (URL shorteners and QR-code services from the
+  public list plus [config/redirectors_local.txt](config/redirectors_local.txt)).
+  Their URL hides the destination; at inference they are reported as UNCERTAIN.
+  `split_report.json` lists *candidate* redirectors found by pattern; a human
+  reviews them before adding them to the local list.
+- **Group split.** Every URL is assigned to train/val/test by its registered
+  domain (PSL private suffixes honoured, so `a.web.app` and `b.web.app` are
+  different sites), so the test set only contains websites the model never saw.
+- **Per-site cap** (50 per split/label/site), so one abused platform cannot
+  dominate training.
+- **Shortcut monitors** in the report compare the two labels (length, paths,
+  subdomains) to reveal remaining shortcuts.
+- `--future-cutoff <ISO time>` puts sites first seen after that time in a
+  separate `test_future` split for time-based evaluation.
 
 | Source | Label | What it gives | Notes |
 |---|---|---|---|
 | PhishTank `online-valid` | phishing | full URLs, community-verified | new-user registration is closed, so keyless (a few downloads/day) |
 | OpenPhish community feed | phishing | full URLs | non-commercial use only |
 | Tranco top-1M | benign (weak) | domain names only | used for domain-only mode and as a popularity filter |
+| Tranco homepages | benign (weak) | `https://<domain>/` for 20k sampled domains | balances bare-homepage phishing URLs |
 | Common Crawl URL index | benign (weak) | full page URLs on top Tranco domains | only index metadata is read; no page is visited |
+| PeterDaveHello/url-shorteners | reference | ~1,450 shortener domains | CC BY-SA 4.0; routing only, never a label |
 
 `data/processed/build_report.json` summarizes counts, duplicates, rejects and
 warnings, and contains no raw URLs.

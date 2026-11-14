@@ -40,8 +40,8 @@ from typing import Callable, Iterable, Mapping
 from urllib.parse import urlsplit
 
 import httpx
-import tldextract
 
+from ..preprocessing.url_normalizer import private_registered_domain
 from .download_datasets import USER_AGENT_FALLBACK
 from .parsers import find_snapshots, parse_tranco
 
@@ -63,9 +63,6 @@ MAX_URL_LENGTH = 2048
 _CRAWL_RE = re.compile(r"CC-MAIN-\d{4}-\d{2}")
 _INDEX_FILE_RE = re.compile(r"cdx-\d{5}\.gz")
 
-# Offline PSL snapshot, private suffixes ON (web.app, github.io, blogspot.com, ...).
-_PRIVATE_EXTRACTOR = tldextract.TLDExtract(suffix_list_urls=(), include_psl_private_domains=True)
-
 
 class SampleError(RuntimeError):
     """Sampling failed. Messages never contain secrets (there are none here)."""
@@ -85,12 +82,6 @@ class Block:
 
 
 # --------------------------------------------------------------------------- pure helpers
-def private_registered_domain(host: str) -> str:
-    """'a.b.example.co.uk' -> 'example.co.uk'; 'x.web.app' -> 'x.web.app'; IP -> ''."""
-    ext = _PRIVATE_EXTRACTOR(host)
-    return f"{ext.domain}.{ext.suffix}" if ext.domain and ext.suffix else ""
-
-
 def surt_host(urlkey: str) -> str:
     """'com,example,www)/path' -> 'www.example.com' (port dropped)."""
     head = urlkey.split(")", 1)[0].split(":", 1)[0]

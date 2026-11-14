@@ -31,6 +31,18 @@ _UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
 
 # Offline-only: use the bundled Public Suffix List snapshot, never download one.
 _EXTRACTOR = tldextract.TLDExtract(suffix_list_urls=())
+# Same snapshot with PSL *private* suffixes (web.app, github.io, blogspot.com...).
+_PRIVATE_EXTRACTOR = tldextract.TLDExtract(suffix_list_urls=(), include_psl_private_domains=True)
+
+
+def private_registered_domain(host: str) -> str:
+    """Registered domain with private suffixes honoured.
+
+    'a.b.example.co.uk' -> 'example.co.uk', but 'evil.web.app' -> 'evil.web.app'
+    (a tenant of a shared platform is its own site). '' for IPs and bare names.
+    """
+    ext = _PRIVATE_EXTRACTOR(host)
+    return f"{ext.domain}.{ext.suffix}" if ext.domain and ext.suffix else ""
 
 
 class InvalidURLError(ValueError):
