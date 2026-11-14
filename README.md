@@ -14,7 +14,8 @@ Phishing-detection module of the Bharat AI on-device security assistant.
 | Feed downloader / parsers / dataset builder (`src/data/`) | done, tested |
 | Benign full-URL sampler, Common Crawl (`src/data/commoncrawl_sample.py`) | done, tested |
 | Cleaning + leakage-safe train/val/test split (`src/data/split_dataset.py`) | done, tested |
-| CNN model, training, evaluation, calibration | not started |
+| Training data loader, metrics, classic baselines (`src/training/`) | done, tested |
+| CNN model, training, calibration | not started |
 | Threat intelligence, inference engine, API, ARM deployment | not started |
 
 ## Requirements
@@ -102,6 +103,45 @@ What step 4 does, and why:
 
 `data/processed/build_report.json` summarizes counts, duplicates, rejects and
 warnings, and contains no raw URLs.
+
+## Baselines
+
+```powershell
+python -m src.training.baselines              # validation split only
+python -m src.training.baselines --with-test  # final comparison only
+```
+
+The test split stays untouched until the final comparison, so it remains an
+honest exam on unseen websites. Reports (aggregate numbers only, no URLs) go
+to `reports/baselines_<mode>.json`, including per-slice results.
+
+First run, **validation split**, 2026-11-14 (C grid up to 10). "Recall @1% FPR"
+is the share of phishing caught while wrongly flagging at most 1 in 100 safe URLs.
+
+| Mode | Model | PR-AUC | ROC-AUC | Recall @1% FPR |
+|---|---|---|---|---|
+| full_url | shortcut probe (4 length numbers) | 0.611 | 0.756 | 0.359 |
+| full_url | structural features + LR | 0.759 | 0.899 | 0.392 |
+| full_url | structural features + boosted trees | 0.845 | 0.949 | 0.539 |
+| full_url | char 2–5-gram TF-IDF + LR | **0.914** | **0.967** | **0.727** |
+| domain | shortcut probe | 0.740 | 0.913 | 0.695 |
+| domain | char 2–5-gram TF-IDF + LR | 0.860 | 0.944 | 0.785 |
+
+Known issue: in **domain mode** 84% of hosts with a subdomain are phishing, so
+the length-only probe already scores well. On bare domains alone the best
+model reaches only PR-AUC 0.30. The domain dataset needs more benign subdomain
+hosts before its numbers mean much.
+
+## Training on a GPU PC (Windows)
+
+1. Clone the repo, create a 64-bit venv, run `pip install -r requirements.txt`,
+   then install the CUDA build of PyTorch from pytorch.org.
+2. If `import torch` fails with **WinError 126/448**, install the *Microsoft
+   Visual C++ 2015–2022 Redistributable (x64)*. **WinError 4551** means an
+   Application Control policy is blocking the DLLs; ask the machine's
+   administrator for an allow rule.
+3. Copy `data/processed/splits/` from the machine that built the dataset
+   (data is not in Git), then run `python scripts/check_env.py`.
 
 ## Project layout
 
