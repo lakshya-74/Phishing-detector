@@ -13,6 +13,8 @@ data/raw/
 data/processed/
 logs/
 *.pth
+*.pt
+*.pt.part
 artifacts/
 
 # OS / IDE

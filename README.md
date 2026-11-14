@@ -15,7 +15,8 @@ Phishing-detection module of the Bharat AI on-device security assistant.
 | Benign full-URL sampler, Common Crawl (`src/data/commoncrawl_sample.py`) | done, tested |
 | Cleaning + leakage-safe train/val/test split (`src/data/split_dataset.py`) | done, tested |
 | Training data loader, metrics, classic baselines (`src/training/`) | done, tested |
-| CNN model, training, calibration | not started |
+| Char-CNN / hybrid model + resumable trainer (`src/models/`, `src/training/train_cnn.py`) | done, tested; first GPU run pending |
+| Calibration + three-outcome thresholds | not started |
 | Threat intelligence, inference engine, API, ARM deployment | not started |
 
 ## Requirements
@@ -131,6 +132,37 @@ Known issue: in **domain mode** 84% of hosts with a subdomain are phishing, so
 the length-only probe already scores well. On bare domains alone the best
 model reaches only PR-AUC 0.30. The domain dataset needs more benign subdomain
 hosts before its numbers mean much.
+
+## Training the character CNN
+
+```powershell
+python -m src.training.train_cnn                    # full_url, plain char-CNN
+python -m src.training.train_cnn --model hybrid     # CNN + structural features
+python -m src.training.train_cnn --device cuda      # refuse to fall back to CPU
+```
+
+- Model: character embedding → Conv1d (widths 3/5/7) → masked max-pool →
+  small MLP (~90k parameters, about 0.4 MB in float32). Padding is masked, so
+  the result does not depend on how much padding follows the URL.
+- After every epoch the full state goes to `artifacts/runs/<mode>_<model>/last.pt`;
+  running the same command again **resumes**. The best epoch (validation
+  PR-AUC) is kept in `best.pt`, and training stops after `--patience` epochs
+  without improvement.
+- Reports: `reports/cnn_<mode>_<model>.json` (aggregates only), which also quote
+  the baseline score to beat.
+
+### Over SSH on Windows
+
+Windows OpenSSH ends every program from a session when it disconnects. Start
+training as a scheduled task instead:
+
+```bat
+scripts\train_background.cmd start --model cnn --device cuda
+scripts\train_background.cmd status      &rem progress (safe to run any time)
+scripts\train_background.cmd stop        &rem stop; "start" again resumes
+```
+
+Output is appended to `logs\train.log`.
 
 ## Training on a GPU PC (Windows)
 
