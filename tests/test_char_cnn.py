@@ -80,7 +80,7 @@ def test_train_resume_and_checkpoint(tiny, tmp_path, model):
 
     m, tok, scaler, meta = load_checkpoint(run / "best.pt")
     assert (scaler is None) == (model == "cnn") and meta["mode"] == "full_url"
-    saved = (reports / f"cnn_full_url_{model}.json").read_text(encoding="utf-8")
+    saved = (reports / "cnn_run.json").read_text(encoding="utf-8")   # named after the run dir
     assert "badsite" not in saved and "news1" not in saved    # no URLs in reports
 
 
@@ -117,3 +117,14 @@ def test_cli(tiny, tmp_path, monkeypatch):
                            "--device", "cpu", "--with-test"]) == 0
     rep = json.loads((out / "report.json").read_text(encoding="utf-8"))
     assert rep["evaluated_splits"] == ["val", "test"]
+
+
+def test_summarize(tiny, tmp_path, capsys):
+    from src.training import summarize
+    runs = tmp_path / "runs"
+    train(small(epochs=1), splits=tiny, run_dir=runs / "full_url_cnn", device="cpu",
+          cache_dir=None, reports_dir=tmp_path / "r")
+    rows = summarize.summarize("full_url", runs, tmp_path / "r")
+    assert len(rows) == 1 and rows[0][0].startswith("full_url_cnn (cnn, seed 13)")
+    assert summarize.main(["--runs", str(runs), "--reports", str(tmp_path / "r")]) == 0
+    assert "PR-AUC[homepage_only]" in capsys.readouterr().out

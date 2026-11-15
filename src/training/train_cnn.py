@@ -287,7 +287,7 @@ def train(cfg: TrainConfig, *, splits: Path = SPLITS_DIR, run_dir: Path | None =
     }
     (run_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     reports_dir.mkdir(parents=True, exist_ok=True)
-    (reports_dir / f"cnn_{cfg.mode}_{cfg.model}.json").write_text(
+    (reports_dir / f"cnn_{run_dir.name}.json").write_text(  # default run dir: <mode>_<model>
         json.dumps(report, indent=2) + "\n", encoding="utf-8")
     s = _summary(results["val"]["overall"])
     ref = report["baseline_val_reference"]
