@@ -104,15 +104,21 @@ def _batch(t: Tensors, idx: torch.Tensor):
 
 
 @torch.no_grad()
-def predict(model: CharCNN, t: Tensors, batch_size: int = 1024) -> np.ndarray:
+def predict_logits(model: CharCNN, t: Tensors, batch_size: int = 1024) -> np.ndarray:
     model.eval()
     out = []
     n = len(t.y)
     for start in range(0, n, batch_size):
         idx = torch.arange(start, min(start + batch_size, n), device=t.y.device)
         ids, feats, _ = _batch(t, idx)
-        out.append(torch.sigmoid(model(ids, feats)).float().cpu())
+        out.append(model(ids, feats).float().cpu())
     return torch.cat(out).double().numpy()
+
+
+def predict(model: CharCNN, t: Tensors, batch_size: int = 1024) -> np.ndarray:
+    """Uncalibrated P(phishing): float32 sigmoid of the logits."""
+    logits = torch.from_numpy(predict_logits(model, t, batch_size)).float()
+    return torch.sigmoid(logits).double().numpy()
 
 
 # --------------------------------------------------------------------- utils

@@ -15,8 +15,8 @@ Phishing-detection module of the Bharat AI on-device security assistant.
 | Benign full-URL sampler, Common Crawl (`src/data/commoncrawl_sample.py`) | done, tested |
 | Cleaning + leakage-safe train/val/test split (`src/data/split_dataset.py`) | done, tested |
 | Training data loader, metrics, classic baselines (`src/training/`) | done, tested |
-| Char-CNN / hybrid model + resumable trainer (`src/models/`, `src/training/train_cnn.py`) | done, tested; first GPU run pending |
-| Calibration + three-outcome thresholds | not started |
+| Char-CNN / hybrid model + resumable trainer (`src/models/`, `src/training/train_cnn.py`) | done, tested, trained on GPU (full_url) |
+| Calibration + three-outcome thresholds (`src/training/calibrate.py`) | done, tested; budgets to be chosen |
 | Threat intelligence, inference engine, API, ARM deployment | not started |
 
 ## Requirements
@@ -150,6 +150,41 @@ python -m src.training.train_cnn --device cuda      # refuse to fall back to CPU
   without improvement.
 - Reports: `reports/cnn_<mode>_<model>.json` (aggregates only), which also quote
   the baseline score to beat.
+
+### First GPU results (full_url, validation split, 2026-11-15)
+
+NVIDIA RTX 2000 Ada, about 9 s per epoch, 3 seeds each:
+
+| Model | PR-AUC (3 seeds) | Recall @1% FPR (3 seeds) |
+|---|---|---|
+| char n-gram LR baseline | 0.9135 | 0.727 |
+| char-CNN | 0.918 / 0.921 / 0.923 | 0.745 / 0.726 / 0.756 |
+| **hybrid (CNN + features)** | **0.929 / 0.930 / 0.935** | **0.749 / 0.775 / 0.788** |
+
+The hybrid's worst seed beats the CNN's best seed on PR-AUC. Raw neural-net
+probabilities are less well calibrated (ECE ~0.03 vs 0.012 for LR), so they
+are calibrated before thresholds are set.
+
+### Calibration and the three outcomes
+
+```powershell
+python -m src.training.calibrate --run artifacts/runs/full_url_hybrid                # validation
+python -m src.training.calibrate --run artifacts/runs/full_url_hybrid --with-test    # once, at the end
+python -m src.training.summarize --split test
+```
+
+- `p = sigmoid(a·logit + b)` (Platt scaling) is fitted on validation. It is
+  monotone, so ranking metrics do not change.
+- **PHISHING** if `p > t_phishing`, chosen so at most `--max-false-alarm` of
+  safe URLs get it. **LIKELY_SAFE** if `p < t_safe`, chosen so at most
+  `--max-missed` of phishing URLs get it. Everything else is **UNCERTAIN**.
+- These budgets are rates *within* each class, so they hold whatever the real
+  phishing share is. The report also projects how often a PHISHING verdict is
+  right when only 1% or 5% of traffic is phishing. With rare phishing, even a
+  1% false-alarm rate makes most PHISHING verdicts wrong, so the false-alarm
+  budget must be strict.
+- Output: `<run>/calibration.json` (the `calibrator` block is what the
+  inference engine loads) and `reports/calibration_<run>.json`.
 
 ### Over SSH on Windows
 
