@@ -16,7 +16,7 @@ Phishing-detection module of the Bharat AI on-device security assistant.
 | Cleaning + leakage-safe train/val/test split (`src/data/split_dataset.py`) | done, tested |
 | Training data loader, metrics, classic baselines (`src/training/`) | done, tested |
 | Char-CNN / hybrid model + resumable trainer (`src/models/`, `src/training/train_cnn.py`) | done, tested, trained on GPU (full_url) |
-| Calibration + three-outcome thresholds (`src/training/calibrate.py`) | done, tested; budgets to be chosen |
+| Calibration + three-outcome thresholds (`src/training/calibrate.py`) | done, tested; validated on GPU, budgets 0.1% / 5% recommended |
 | Threat intelligence, inference engine, API, ARM deployment | not started |
 
 ## Requirements
@@ -185,6 +185,33 @@ python -m src.training.summarize --split test
   budget must be strict.
 - Output: `<run>/calibration.json` (the `calibrator` block is what the
   inference engine loads) and `reports/calibration_<run>.json`.
+
+#### Validation results (full_url hybrid, seed 13, 2026-11-15)
+
+`p = sigmoid(0.477·logit − 0.418)`. The slope below 1 means the raw model
+was over-confident. ECE 0.028 → 0.004, Brier 0.0375 → 0.0348. Validation has
+10,178 safe and 2,160 phishing URLs.
+
+| False-alarm budget | Phishing caught | PHISHING verdict right, 1% / 5% phishing traffic |
+|---|---|---|
+| 0.1% | 60.0% | 86.0% / 97.0% |
+| 0.5% | 73.0% | 60.0% / 88.7% |
+| 1.0% | 78.8% | 44.5% / 80.7% |
+
+The missed budget sets the UNCERTAIN share (at 1% phishing traffic):
+2% → ~39%, 5% → ~17%, 10% → ~5%.
+
+Recommended: **0.1% false alarm, 5% missed**.
+
+- Phishing is rare in real traffic, so looser budgets make most PHISHING
+  verdicts false alarms.
+- The benign data comes from popular sites, so real false alarms will likely
+  be higher than validation shows.
+- Phishing that misses the PHISHING verdict mostly lands in UNCERTAIN (35%),
+  not LIKELY_SAFE (5%).
+
+At 0.1% the threshold is set by only about 10 safe validation URLs, so the
+test rate can easily land anywhere from about 0.05% to 0.2%.
 
 ### Over SSH on Windows
 
