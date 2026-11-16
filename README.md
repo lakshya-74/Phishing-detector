@@ -16,7 +16,8 @@ Phishing-detection module of the Bharat AI on-device security assistant.
 | Cleaning + leakage-safe train/val/test split (`src/data/split_dataset.py`) | done, tested |
 | Training data loader, metrics, classic baselines (`src/training/`) | done, tested |
 | Char-CNN / hybrid model + resumable trainer (`src/models/`, `src/training/train_cnn.py`) | done, tested, trained on GPU (full_url) |
-| Calibration + three-outcome thresholds (`src/training/calibrate.py`) | done, tested; validated on GPU, budgets 0.1% / 5% recommended |
+| Calibration + three-outcome thresholds (`src/training/calibrate.py`) | done, tested; full_url test run done (false-alarm budget not met, see below) |
+| Per-website error inspection (`src/training/inspect_errors.py`) | done, tested |
 | Threat intelligence, inference engine, API, ARM deployment | not started |
 
 ## Requirements
@@ -210,8 +211,57 @@ Recommended: **0.1% false alarm, 5% missed**.
 - Phishing that misses the PHISHING verdict mostly lands in UNCERTAIN (35%),
   not LIKELY_SAFE (5%).
 
-At 0.1% the threshold is set by only about 10 safe validation URLs, so the
-test rate can easily land anywhere from about 0.05% to 0.2%.
+At 0.1% the threshold is set by only about 10 safe validation URLs.
+
+### Final test results (full_url, 2026-11-16)
+
+The test split was opened once, with the models, seeds and budgets fixed
+beforehand. The neural models are seed 13 and calibrated. The baselines'
+ECE is uncalibrated.
+
+| Model | PR-AUC | Recall @1% FPR | Recall @0.1% FPR | ECE | PR-AUC homepage / path / www |
+|---|---|---|---|---|---|
+| shortcut probe | 0.649 | 0.355 | 0.013 | 0.028 | 0.908 / 0.274 / 0.394 |
+| structural features + LR | 0.771 | 0.518 | 0.064 | 0.015 | 0.934 / 0.583 / 0.358 |
+| structural features + boosted trees | 0.858 | 0.541 | 0.146 | 0.019 | 0.959 / 0.724 / 0.680 |
+| char 2–5-gram TF-IDF + LR | 0.924 | **0.740** | **0.517** | **0.009** | 0.957 / **0.874** / 0.739 |
+| char-CNN | 0.910 | 0.700 | 0.292 | 0.014 | 0.956 / 0.846 / 0.778 |
+| hybrid (CNN + features) | **0.929** | 0.716 | 0.319 | 0.013 | **0.972** / 0.860 / **0.870** |
+
+Three outcomes on test with the 0.1% false-alarm / 5% missed budgets:
+
+| Model | Safe → PHISHING (budget 0.1%) | Phishing caught | Phishing → LIKELY_SAFE (budget 5%) | PHISHING right at 1% / 5% phishing traffic |
+|---|---|---|---|---|
+| hybrid | **0.56%** | 61.5% | 2.2% | 52.8% / 85.4% |
+| char-CNN | **0.33%** | 61.1% | 3.0% | 64.9% / 90.6% |
+
+What this shows:
+
+- The hybrid's lead over the n-gram baseline shrank from 0.021 PR-AUC
+  (validation) to 0.005 (test), about the size of the seed-to-seed spread.
+  Choosing the best seed and epoch on validation probably flattered the
+  neural models there.
+- At strict false-alarm levels the baseline is clearly better (52% vs 32%
+  caught at 0.1% FPR). The hybrid wins on homepage-only and `www.` URLs; the
+  baseline wins on URLs with a path.
+- The false-alarm budget did **not** hold on test, while the phishing-side
+  budget did. Safe URLs come in groups of up to 21 per website and each split
+  has only ~2,400 safe websites, so a 0.1% threshold rests on a handful of
+  websites.
+
+These numbers stay as reported. Any later model change is judged on
+validation and confirmed on fresh data, not on this test split.
+
+### Inspecting mistakes per website
+
+```powershell
+python -m src.training.inspect_errors --run artifacts/runs/full_url_hybrid --with-test
+```
+
+Counts false alarms and misses per URL **and per website**, with a range from
+resampling whole websites. For validation it also lists the safe websites
+with the highest scores, showing host and path only (no query strings). For
+test it prints counts only. Nothing is written to disk.
 
 ### Over SSH on Windows
 
