@@ -115,6 +115,7 @@ def inspect_run(run_dir: Path, *, splits: Path = SPLITS_DIR, with_test: bool = F
 
     val, p = score("val")
     report = {"run": run_dir.name, "mode": meta["mode"], "budgets": saved["budgets"],
+              "unit": saved.get("unit", "url"),
               "thresholds": {"t_phishing": cal.t_phishing, "t_safe": cal.t_safe},
               "val": {"errors": site_errors(p, val.y, val.groups, cal.t_phishing, cal.t_safe,
                                             n_boot=n_boot),
@@ -135,7 +136,8 @@ def print_report(r: dict) -> None:
     t = r["thresholds"]
     print(f"run {r['run']} ({r['mode']}): PHISHING if p > {t['t_phishing']:.4f}, "
           f"LIKELY_SAFE if p < {t['t_safe']:.4f} (budgets {_pct(r['budgets']['max_false_alarm'])} "
-          f"false alarm, {_pct(r['budgets']['max_missed'])} missed)")
+          f"false alarm, {_pct(r['budgets']['max_missed'])} missed, "
+          f"{'every website counts once' if r.get('unit') == 'website' else 'per URL'})")
     for split in ("val", "test"):
         if split not in r:
             continue

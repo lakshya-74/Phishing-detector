@@ -18,6 +18,7 @@ Phishing-detection module of the Bharat AI on-device security assistant.
 | Char-CNN / hybrid model + resumable trainer (`src/models/`, `src/training/train_cnn.py`) | done, tested, trained on GPU (full_url) |
 | Calibration + three-outcome thresholds (`src/training/calibrate.py`) | done, tested; full_url test run done (false-alarm budget not met, see below) |
 | Per-website error inspection (`src/training/inspect_errors.py`) | done, tested |
+| Per-website budgets, n-gram model without pickle, CNN + n-gram combination (`src/training/ensemble.py`) | done, tested; to run on the GPU PC |
 | Threat intelligence, inference engine, API, ARM deployment | not started |
 
 ## Requirements
@@ -174,6 +175,9 @@ python -m src.training.calibrate --run artifacts/runs/full_url_hybrid --with-tes
 python -m src.training.summarize --split test
 ```
 
+The results below were produced with per-URL budgets (`--unit url`).
+Per-website budgets came later; see the next sections.
+
 - `p = sigmoid(a·logit + b)` (Platt scaling) is fitted on validation. It is
   monotone, so ranking metrics do not change.
 - **PHISHING** if `p > t_phishing`, chosen so at most `--max-false-alarm` of
@@ -283,6 +287,38 @@ Findings at the 0.1% budget (2026-11-16):
   validation (0.01–0.23%) and test (0.08–1.18%) overlap. A 0.1% budget is
   about 2–3 websites out of ~2,400, which is below what this much data can
   measure.
+
+### Per-website budgets and combining models (validation only)
+
+Calibration now counts **every website once** by default (`--unit website`),
+with a 0.5% false-alarm budget. That is about 12 of the ~2,400 safe
+validation websites. `--unit url` restores the old per-URL counting.
+
+```powershell
+python -m src.training.ensemble --cnn-run artifacts/runs/full_url_hybrid
+python -m src.training.ensemble --cnn-run artifacts/runs/full_url_cnn     # reuses the n-gram model
+```
+
+`ensemble` compares three candidates on validation: the CNN run alone, the
+n-gram model alone, and both combined as
+`p = sigmoid(w1·cnn_logit + w2·ngram_logit + b)` with both weights > 0.
+
+- **Never reads the test split.** It was used once, above. A new model is
+  judged on validation and confirmed later on fresh data.
+- **Honest validation numbers.** They are cross-fitted over websites: weights
+  and thresholds are fitted on 4/5 of the validation websites and applied to
+  the other 1/5, five times.
+- **The n-gram model is the `char_ngram_lr` baseline**, with the same
+  settings and C search. It is saved to `artifacts/runs/<mode>_ngram/model.npz`
+  as plain arrays and loaded with `allow_pickle=False`, so opening a model
+  file cannot run code. It is reused while the data is unchanged.
+- **Final calibrators** for all three candidates, fitted on all of
+  validation, go to `artifacts/runs/<cnn run>_ensemble/ensemble.json`. A
+  report with aggregate numbers only goes to `reports/ensemble_<cnn run>.json`.
+- **`calibrate` keeps the exam record.** It refuses to overwrite a
+  `calibration.json` that holds test-split results unless you pass `--force`.
+- **Caveat:** the CNN's best epoch and the n-gram model's C were both chosen on
+  validation, which flatters both members a little.
 
 ### Over SSH on Windows
 

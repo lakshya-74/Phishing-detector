@@ -29,10 +29,10 @@ from typing import Callable
 import numpy as np
 import sklearn
 from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import average_precision_score
 
+from src.models.calibration import sigmoid
+from src.models.ngram_lr import fit_with_c_search
 from src.preprocessing.feature_extractor import FeatureExtractor, FeatureScaler
 
 from .data import CACHE_DIR, MODES, SPLITS_DIR, SplitData, load_features, load_split
@@ -97,19 +97,10 @@ def run_baselines(mode: str, root: Path = SPLITS_DIR, with_test: bool = False, s
     # --- character n-gram TF-IDF + logistic regression, C chosen on validation
     if "char_ngram_lr" in wanted:
         t0 = time.perf_counter()
-        vec = TfidfVectorizer(analyzer="char", ngram_range=(2, 5), min_df=3, max_features=300_000,
-                              sublinear_tf=True, lowercase=False, dtype=np.float32)
-        x_train = vec.fit_transform(train.texts)
-        x_val = vec.transform(val.texts)
-        search = {}
-        for c in c_grid:
-            m = LogisticRegression(C=c, solver="liblinear", max_iter=1000).fit(x_train, train.y)
-            search[str(c)] = float(average_precision_score(val.y, m.predict_proba(x_val)[:, 1]))
-        best_c = float(max(search, key=search.get))
-        model = LogisticRegression(C=best_c, solver="liblinear", max_iter=1000).fit(x_train, train.y)
+        ngram, search = fit_with_c_search(train.texts, train.y, val.texts, val.y, c_grid)
         results["char_ngram_lr"] = _evaluate(
-            "char_ngram_lr", lambda d, f: model.predict_proba(vec.transform(d.texts))[:, 1], evals,
-            {"vocabulary": len(vec.vocabulary_), "C": best_c, "val_pr_auc_by_C": search}, t0)
+            "char_ngram_lr", lambda d, f: sigmoid(ngram.logits(d.texts)), evals,
+            {"vocabulary": ngram.vocabulary_size, "C": ngram.meta["C"], "val_pr_auc_by_C": search}, t0)
 
     return {
         "mode": mode,

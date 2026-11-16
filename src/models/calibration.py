@@ -93,3 +93,70 @@ class Calibrator:
         except json.JSONDecodeError as exc:
             raise ValueError("calibrator file is not valid JSON") from exc
         return cls.from_config(config)
+
+
+STACK_TYPE = "stacked_three_outcome"
+
+
+@dataclass(frozen=True)
+class StackCalibrator:
+    """p = sigmoid(w1*logit_1 + ... + wk*logit_k + bias) over named member models.
+
+    With one member this is Platt scaling; with several it combines models.
+    Every weight must be > 0, so each member can only push in its own direction.
+    """
+    members: tuple[str, ...]
+    weights: tuple[float, ...]
+    bias: float
+    t_phishing: float
+    t_safe: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "members", tuple(self.members))
+        object.__setattr__(self, "weights", tuple(self.weights))
+        if not self.members or len(self.members) != len(self.weights):
+            raise ValueError("need one weight per member and at least one member")
+        if len(set(self.members)) != len(self.members) or not all(
+                isinstance(m, str) and m for m in self.members):
+            raise ValueError("member names must be unique, non-empty strings")
+        values = (*self.weights, self.bias, self.t_phishing, self.t_safe)
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+                   for v in values):
+            raise ValueError("calibrator values must be finite numbers")
+        if min(self.weights) <= 0:
+            raise ValueError("every member weight must be > 0")
+        if not 0.0 <= self.t_safe <= self.t_phishing <= 1.0:
+            raise ValueError("thresholds must satisfy 0 <= t_safe <= t_phishing <= 1")
+
+    def probability(self, logits) -> np.ndarray:
+        """logits: shape (n, k) in member order, or (n,) when there is one member."""
+        x = np.asarray(logits, dtype=np.float64)
+        if x.ndim == 1:
+            x = x[:, None]
+        if x.ndim != 2 or x.shape[1] != len(self.weights):
+            raise ValueError(f"expected logits of shape (n, {len(self.weights)})")
+        return sigmoid(x @ np.asarray(self.weights) + self.bias)
+
+    def outcome(self, probability) -> np.ndarray:
+        return classify(probability, self.t_phishing, self.t_safe)
+
+    def to_config(self) -> dict[str, Any]:
+        return {"format_version": FORMAT_VERSION, "type": STACK_TYPE,
+                "members": list(self.members), "weights": [float(w) for w in self.weights],
+                "bias": float(self.bias), "t_phishing": float(self.t_phishing),
+                "t_safe": float(self.t_safe)}
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> "StackCalibrator":
+        if not isinstance(config, dict):
+            raise ValueError("calibrator config must be a JSON object")
+        missing = {"format_version", "type", "members", "weights", "bias", "t_phishing",
+                   "t_safe"} - config.keys()
+        if missing:
+            raise ValueError(f"calibrator config missing keys: {sorted(missing)}")
+        if config["format_version"] != FORMAT_VERSION or config["type"] != STACK_TYPE:
+            raise ValueError("unsupported calibrator format/type")
+        if not isinstance(config["members"], list) or not isinstance(config["weights"], list):
+            raise ValueError("members and weights must be lists")
+        return cls(tuple(config["members"]), tuple(config["weights"]), config["bias"],
+                   config["t_phishing"], config["t_safe"])
