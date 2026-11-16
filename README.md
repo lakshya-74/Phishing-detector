@@ -263,6 +263,27 @@ resampling whole websites. For validation it also lists the safe websites
 with the highest scores, showing host and path only (no query strings). For
 test it prints counts only. Nothing is written to disk.
 
+Findings at the 0.1% budget (2026-11-16):
+
+| Model | Val false alarms | Test false alarms | Test without the worst website |
+|---|---|---|---|
+| hybrid | 10 URLs from 4 of 2,402 safe websites | 60 URLs from 9 of 2,492 (worst: 20) | 0.37% |
+| char-CNN | 10 URLs from 8 of 2,402 | 36 URLs from 4 of 2,492 (worst: 20) | 0.15% |
+
+- **False alarms come in website-sized lumps**, so the per-URL rate jumps
+  whenever one flagged website brings 20 URLs.
+- **The highest-scoring "safe" websites are genuine.** Examples are webmail,
+  extranet and app login pages, status pages with long incident IDs, and a
+  Bitcoin explorer's address pages. The labels look right; this is a real
+  blind spot of judging from the URL alone.
+- **It is not a simple keyword shortcut in training.** Login-type words
+  appear in 2.4% of safe and 2.9% of phishing training paths. Long random
+  strings are more common in safe paths (39% vs 13%).
+- **The two estimates are consistent.** The per-website ranges for
+  validation (0.01–0.23%) and test (0.08–1.18%) overlap. A 0.1% budget is
+  about 2–3 websites out of ~2,400, which is below what this much data can
+  measure.
+
 ### Over SSH on Windows
 
 Windows OpenSSH ends every program from a session when it disconnects. Start
