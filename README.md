@@ -18,7 +18,7 @@ Phishing-detection module of the Bharat AI on-device security assistant.
 | Char-CNN / hybrid model + resumable trainer (`src/models/`, `src/training/train_cnn.py`) | done, tested, trained on GPU (full_url) |
 | Calibration + three-outcome thresholds (`src/training/calibrate.py`) | done, tested; full_url test run done (false-alarm budget not met, see below) |
 | Per-website error inspection (`src/training/inspect_errors.py`) | done, tested |
-| Per-website budgets, n-gram model without pickle, CNN + n-gram combination (`src/training/ensemble.py`) | done, tested; to run on the GPU PC |
+| Per-website budgets, n-gram model without pickle, CNN + n-gram combination (`src/training/ensemble.py`) | done, tested; run on GPU: **hybrid + n-gram chosen for full_url** |
 | Threat intelligence, inference engine, API, ARM deployment | not started |
 
 ## Requirements
@@ -317,6 +317,41 @@ n-gram model alone, and both combined as
   report with aggregate numbers only goes to `reports/ensemble_<cnn run>.json`.
 - **`calibrate` keeps the exam record.** It refuses to overwrite a
   `calibration.json` that holds test-split results unless you pass `--force`.
+
+### Chosen full_url model (2026-11-16)
+
+Validation numbers, cross-fitted over websites, with budgets of 0.5% false
+alarm and 5% missed (every website counts once):
+
+| Candidate | PR-AUC | Phishing caught | Safe websites flagged | PHISHING right @1% phishing | UNCERTAIN @1% |
+|---|---|---|---|---|---|
+| char n-gram LR | 0.911 | 76.4% | 17 / 2,402 | 60.5% | 27.3% |
+| char-CNN | 0.922 | 80.9% | 31 / 2,402 | 59.6% | 34.3% |
+| char-CNN + n-gram | 0.930 | 79.1% | 23 / 2,402 | 61.7% | 27.2% |
+| hybrid | 0.933 | 83.6% | 29 / 2,402 | 60.0% | 21.5% |
+| **hybrid + n-gram** | **0.938** | **83.6%** | 24 / 2,402 | **62.7%** | **18.2%** |
+
+**Decision: hybrid + n-gram**,
+`p = sigmoid(0.332·hybrid_logit + 0.391·ngram_logit + 0.037)`.
+
+- **Rule set beforehand:** the combination had to beat the best single model
+  by more than 0.005 PR-AUC. It passed narrowly (+0.0053).
+- **It also helps elsewhere:** it gives fewer UNCERTAIN verdicts (18% vs 21%)
+  and wrongly flags fewer safe websites (24 vs 29), within the 0.5% budget.
+- **No test-set number yet.** The combination will get one from the fresh
+  exam on new data.
+- **What a verdict means in practice:** at 1% phishing traffic a PHISHING
+  verdict is right about 63% of the time. The product should present it as
+  "high risk, here is why", not as proof.
+
+The shipped model is three files, kept out of Git under `artifacts/`:
+
+- `artifacts/runs/full_url_hybrid/best.pt`
+- `artifacts/runs/full_url_ngram/model.npz`
+- `artifacts/runs/full_url_hybrid_ensemble/ensemble.json`
+
+`ensemble.json` records each member's SHA-256 hash, so the inference engine
+can refuse mismatched files.
 - **Caveat:** the CNN's best epoch and the n-gram model's C were both chosen on
   validation, which flatters both members a little.
 
