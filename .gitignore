@@ -11,6 +11,7 @@ __pycache__/
 # data and large artifacts (reproduce via scripts instead)
 data/raw/
 data/processed/
+data/intel/
 logs/
 *.pth
 *.pt

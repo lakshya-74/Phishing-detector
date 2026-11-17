@@ -19,7 +19,9 @@ Phishing-detection module of the Bharat AI on-device security assistant.
 | Calibration + three-outcome thresholds (`src/training/calibrate.py`) | done, tested; full_url test run done (false-alarm budget not met, see below) |
 | Per-website error inspection (`src/training/inspect_errors.py`) | done, tested |
 | Per-website budgets, n-gram model without pickle, CNN + n-gram combination (`src/training/ensemble.py`) | done, tested; run on GPU: **hybrid + n-gram chosen for full_url** |
-| Threat intelligence, inference engine, API, ARM deployment | not started |
+| Threat intelligence: local database + matcher (`src/intelligence/`) | done, tested; built from real feeds |
+| Threat intelligence: TTL cache, URLhaus, optional online lookups | next |
+| Inference engine, API, ARM deployment | not started |
 
 ## Requirements
 
@@ -367,6 +369,60 @@ scripts\train_background.cmd stop        &rem stop; "start" again resumes
 ```
 
 Output is appended to `logs\train.log`.
+
+## Threat intelligence (local database)
+
+Known phishing URLs from the feeds in `data/raw/` go into one local SQLite
+file, `data/intel/threat_intel.sqlite3` (Git-ignored: the OpenPhish feed is
+for non-commercial use only). Settings are in
+[config/threat_intel.json](config/threat_intel.json).
+
+```powershell
+python -m src.data.download_datasets                     # fresh feed snapshots (daily)
+python -m src.intelligence.local_database update         # ingest only snapshots not seen yet
+python -m src.intelligence.local_database stats
+python -m src.intelligence.local_database lookup "https://example.com/login"
+python -m src.intelligence.local_database lookup example.com --domain
+```
+
+- **Independent of the model and fully offline.** This module never makes a
+  network request and never sends a URL anywhere. Downloading is a separate
+  step.
+- **Three match levels:**
+  - `exact_url`: the same page. The scheme, `#fragment`, host case and
+    default port are ignored.
+  - `hostname`: another listed page on the same host.
+  - `registered_domain`: a listed sibling host, such as `a.evil.xyz` vs
+    `b.evil.xyz`.
+
+  The last two apply only when the site is neither in the Tranco top 100k
+  nor a URL shortener or QR redirector. PSL private suffixes count as
+  separate sites, so `evil.github.io` is not `github.io`.
+- **Source attribution:** every match names its feed, the number of listed
+  URLs, first and last seen, expiry, and up to three feed IDs.
+- **Expiry:** an entry expires 7 days after the newest snapshot that listed
+  it. `update` deletes expired entries. Results carry `stale: true` if the
+  newest snapshot is more than 48 hours old.
+- **`no_match` never means safe.** It only means no feed knows the URL. A
+  lookup that cannot run returns `unavailable` and never raises.
+- **Speed:** lookups use an in-memory copy of the file, reloaded when the
+  file changes. If a new file is damaged, the last good copy stays in use.
+  Reading the file directly cost 13 ms per lookup on Windows because of file
+  locking; the copy takes 0.22 ms, or 0.08 ms for an already-normalized URL.
+  Measured on the development laptop under load, not on the Pi.
+
+First real build (laptop, 2026-11-17; 3 PhishTank + 3 OpenPhish snapshots):
+
+| | |
+|---|---|
+| Records read | 134,855 PhishTank + 900 OpenPhish (27 invalid URLs skipped) |
+| Active entries | 46,579 on 19,757 hosts; file 15.7 MB |
+| Host-level matching allowed | 39% of entries |
+| Exact-only sites with the most entries | google.com 5,253 · qrco.de 4,586 · q-r.to 3,509 · ead.me 3,290 · bit.ly 1,594 · weebly.com 1,197 · adobe.com 1,113 |
+
+Most phishing in the feeds sits on big abused platforms and QR-code
+redirectors. Host-level matching there would flag legitimate services, so
+those entries match exact URLs only.
 
 ## Training on a GPU PC (Windows)
 

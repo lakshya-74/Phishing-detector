@@ -1,0 +1,369 @@
+{
+  "mode": "full_url",
+  "created_at": "2026-11-16T15:01:31+00:00",
+  "unit": "website",
+  "budgets": {
+    "max_false_alarm": 0.005,
+    "max_missed": 0.05
+  },
+  "folds": 5,
+  "seed": 13,
+  "members": {
+    "full_url_cnn": {
+      "kind": "char_cnn",
+      "path": "artifacts/runs/full_url_cnn/best.pt",
+      "sha256": "29418fa55bb164f7ff26c6625597483b8ff635bab10de4348d0788d9597dbc6a",
+      "model_config": {
+        "vocab_size": 97,
+        "embed_dim": 32,
+        "channels": 128,
+        "kernel_sizes": [
+          3,
+          5,
+          7
+        ],
+        "hidden": 64,
+        "dropout": 0.3,
+        "num_features": 0,
+        "feature_hidden": 32
+      }
+    },
+    "char_ngram_lr": {
+      "kind": "char_ngram_lr",
+      "path": "artifacts/runs/full_url_ngram/model.npz",
+      "sha256": "95c63dd21ddb8a6a36ff541f64b7fc46da49ed9f244fb448a9768e0943831ca2",
+      "C": 10.0,
+      "vocabulary": 300000,
+      "status": "reused"
+    }
+  },
+  "fitted_on": {
+    "split": "val",
+    "sha256": "72fd08bb56b2db5e53a45d6d08dfa2954a97919bb6775b27859f5c867536760f",
+    "rows": 12338
+  },
+  "candidates": {
+    "full_url_cnn": {
+      "members": [
+        "full_url_cnn"
+      ],
+      "calibrator": {
+        "format_version": 1,
+        "type": "stacked_three_outcome",
+        "members": [
+          "full_url_cnn"
+        ],
+        "weights": [
+          0.6311558135526408
+        ],
+        "bias": 0.23172275266670214,
+        "t_phishing": 0.6503596969095475,
+        "t_safe": 0.07699157482279786
+      },
+      "crossfit_val": {
+        "pr_auc": 0.9215401185398884,
+        "roc_auc": 0.9686866371185491,
+        "recall_at_fpr_per_url": {
+          "0.001": {
+            "recall": 0.5995370370370371,
+            "fpr": 0.0009825112988799372,
+            "threshold": 0.9319656639125349
+          },
+          "0.01": {
+            "recall": 0.7444444444444445,
+            "fpr": 0.009825112988799371,
+            "threshold": 0.63702988187037
+          },
+          "0.05": {
+            "recall": 0.8689814814814815,
+            "fpr": 0.049223816073884846,
+            "threshold": 0.21155669342963418
+          }
+        },
+        "ece": 0.006005704064580223,
+        "slices_pr_auc": {
+          "homepage_only": 0.9490520490441554,
+          "with_path_or_query": 0.8900882801544916,
+          "www_host": 0.6370303506638236
+        },
+        "outcomes": {
+          "unit": "website",
+          "counts": {
+            "benign": {
+              "PHISHING": 92,
+              "UNCERTAIN": 1524,
+              "LIKELY_SAFE": 8562
+            },
+            "phishing": {
+              "PHISHING": 1604,
+              "UNCERTAIN": 414,
+              "LIKELY_SAFE": 142
+            }
+          },
+          "rates": {
+            "benign": {
+              "PHISHING": 0.0055511400432299695,
+              "UNCERTAIN": 0.3452556972124,
+              "LIKELY_SAFE": 0.6491931627443702
+            },
+            "phishing": {
+              "PHISHING": 0.8090912673921167,
+              "UNCERTAIN": 0.13960447433348966,
+              "LIKELY_SAFE": 0.0513042582743937
+            }
+          },
+          "false_alarm_rate": 0.0055511400432299695,
+          "phishing_caught_rate": 0.8090912673921167,
+          "missed_rate": 0.0513042582743937,
+          "uncertain_share_in_this_split": 0.26539368679978526,
+          "projected_by_phishing_base_rate": {
+            "0.01": {
+              "precision_of_PHISHING": 0.5955093710247613,
+              "phishing_among_LIKELY_SAFE": 0.0007976231307694622,
+              "uncertain_share": 0.3431991849836109
+            },
+            "0.05": {
+              "precision_of_PHISHING": 0.8846753377294676,
+              "phishing_among_LIKELY_SAFE": 0.004142125344597106,
+              "uncertain_share": 0.3349731360684545
+            }
+          },
+          "rates_by_url": {
+            "benign": {
+              "PHISHING": 0.009039103949695421,
+              "UNCERTAIN": 0.14973472194930243,
+              "LIKELY_SAFE": 0.8412261741010022
+            },
+            "phishing": {
+              "PHISHING": 0.7425925925925926,
+              "UNCERTAIN": 0.19166666666666668,
+              "LIKELY_SAFE": 0.06574074074074074
+            }
+          },
+          "websites": {
+            "safe": 2402,
+            "phishing": 1525,
+            "safe_with_a_PHISHING_verdict": 31,
+            "phishing_with_a_LIKELY_SAFE_verdict": 89
+          }
+        }
+      }
+    },
+    "char_ngram_lr": {
+      "members": [
+        "char_ngram_lr"
+      ],
+      "calibrator": {
+        "format_version": 1,
+        "type": "stacked_three_outcome",
+        "members": [
+          "char_ngram_lr"
+        ],
+        "weights": [
+          0.9582907800340043
+        ],
+        "bias": 0.1952625994584083,
+        "t_phishing": 0.8205573537149617,
+        "t_safe": 0.06768796574743519
+      },
+      "crossfit_val": {
+        "pr_auc": 0.9113888371510767,
+        "roc_auc": 0.9665385763047386,
+        "recall_at_fpr_per_url": {
+          "0.001": {
+            "recall": 0.46805555555555556,
+            "fpr": 0.0009825112988799372,
+            "threshold": 0.977174931981622
+          },
+          "0.01": {
+            "recall": 0.7245370370370371,
+            "fpr": 0.009628610729023384,
+            "threshold": 0.6324703120545618
+          },
+          "0.05": {
+            "recall": 0.8546296296296296,
+            "fpr": 0.04981332285321281,
+            "threshold": 0.2339571687162168
+          }
+        },
+        "ece": 0.0033780883931157084,
+        "slices_pr_auc": {
+          "homepage_only": 0.9515012867861532,
+          "with_path_or_query": 0.8598473338508272,
+          "www_host": 0.6693709082617078
+        },
+        "outcomes": {
+          "unit": "website",
+          "counts": {
+            "benign": {
+              "PHISHING": 50,
+              "UNCERTAIN": 1748,
+              "LIKELY_SAFE": 8380
+            },
+            "phishing": {
+              "PHISHING": 1405,
+              "UNCERTAIN": 631,
+              "LIKELY_SAFE": 124
+            }
+          },
+          "rates": {
+            "benign": {
+              "PHISHING": 0.005029899326318978,
+              "UNCERTAIN": 0.273943265772991,
+              "LIKELY_SAFE": 0.7210268349006901
+            },
+            "phishing": {
+              "PHISHING": 0.7637453990533106,
+              "UNCERTAIN": 0.18407436072417493,
+              "LIKELY_SAFE": 0.052180240222514364
+            }
+          },
+          "false_alarm_rate": 0.005029899326318978,
+          "phishing_caught_rate": 0.7637453990533106,
+          "missed_rate": 0.052180240222514364,
+          "uncertain_share_in_this_split": 0.23904383103923893,
+          "projected_by_phishing_base_rate": {
+            "0.01": {
+              "precision_of_PHISHING": 0.605327820159583,
+              "phishing_among_LIKELY_SAFE": 0.0007304695154332557,
+              "uncertain_share": 0.2730445767225028
+            },
+            "0.05": {
+              "precision_of_PHISHING": 0.8887855378405152,
+              "phishing_among_LIKELY_SAFE": 0.0037944601594721416,
+              "uncertain_share": 0.26944982052055017
+            }
+          },
+          "rates_by_url": {
+            "benign": {
+              "PHISHING": 0.0049125564943996855,
+              "UNCERTAIN": 0.17174297504421301,
+              "LIKELY_SAFE": 0.8233444684613873
+            },
+            "phishing": {
+              "PHISHING": 0.6504629629629629,
+              "UNCERTAIN": 0.29212962962962963,
+              "LIKELY_SAFE": 0.05740740740740741
+            }
+          },
+          "websites": {
+            "safe": 2402,
+            "phishing": 1525,
+            "safe_with_a_PHISHING_verdict": 17,
+            "phishing_with_a_LIKELY_SAFE_verdict": 87
+          }
+        }
+      }
+    },
+    "full_url_cnn+char_ngram_lr": {
+      "members": [
+        "full_url_cnn",
+        "char_ngram_lr"
+      ],
+      "calibrator": {
+        "format_version": 1,
+        "type": "stacked_three_outcome",
+        "members": [
+          "full_url_cnn",
+          "char_ngram_lr"
+        ],
+        "weights": [
+          0.39666229719180485,
+          0.4591828314206108
+        ],
+        "bias": 0.48372987238876,
+        "t_phishing": 0.7897639563662999,
+        "t_safe": 0.0761710697966805
+      },
+      "crossfit_val": {
+        "pr_auc": 0.9300718529350119,
+        "roc_auc": 0.9739004970779386,
+        "recall_at_fpr_per_url": {
+          "0.001": {
+            "recall": 0.6171296296296296,
+            "fpr": 0.0009825112988799372,
+            "threshold": 0.9377515039805483
+          },
+          "0.01": {
+            "recall": 0.7462962962962963,
+            "fpr": 0.009923364118687364,
+            "threshold": 0.6717683551507334
+          },
+          "0.05": {
+            "recall": 0.8893518518518518,
+            "fpr": 0.04873256042444488,
+            "threshold": 0.20026781706095337
+          }
+        },
+        "ece": 0.007587485135905865,
+        "slices_pr_auc": {
+          "homepage_only": 0.9551743402962357,
+          "with_path_or_query": 0.898791716133588,
+          "www_host": 0.6660343265442246
+        },
+        "outcomes": {
+          "unit": "website",
+          "counts": {
+            "benign": {
+              "PHISHING": 65,
+              "UNCERTAIN": 1397,
+              "LIKELY_SAFE": 8716
+            },
+            "phishing": {
+              "PHISHING": 1516,
+              "UNCERTAIN": 510,
+              "LIKELY_SAFE": 134
+            }
+          },
+          "rates": {
+            "benign": {
+              "PHISHING": 0.004960512704059749,
+              "UNCERTAIN": 0.2732636072873375,
+              "LIKELY_SAFE": 0.7217758800086029
+            },
+            "phishing": {
+              "PHISHING": 0.7909235451238378,
+              "UNCERTAIN": 0.15677835556516195,
+              "LIKELY_SAFE": 0.05229809931100023
+            }
+          },
+          "false_alarm_rate": 0.004960512704059749,
+          "phishing_caught_rate": 0.7909235451238378,
+          "missed_rate": 0.05229809931100023,
+          "uncertain_share_in_this_split": 0.22802805626204656,
+          "projected_by_phishing_base_rate": {
+            "0.01": {
+              "precision_of_PHISHING": 0.6169381600349724,
+              "phishing_among_LIKELY_SAFE": 0.0007313589906093487,
+              "uncertain_share": 0.27209875477011575
+            },
+            "0.05": {
+              "precision_of_PHISHING": 0.8935239655167433,
+              "phishing_among_LIKELY_SAFE": 0.003799066397949502,
+              "uncertain_share": 0.26743934470122877
+            }
+          },
+          "rates_by_url": {
+            "benign": {
+              "PHISHING": 0.006386323442719591,
+              "UNCERTAIN": 0.1372568284535272,
+              "LIKELY_SAFE": 0.8563568481037532
+            },
+            "phishing": {
+              "PHISHING": 0.7018518518518518,
+              "UNCERTAIN": 0.2361111111111111,
+              "LIKELY_SAFE": 0.062037037037037036
+            }
+          },
+          "websites": {
+            "safe": 2402,
+            "phishing": 1525,
+            "safe_with_a_PHISHING_verdict": 23,
+            "phishing_with_a_LIKELY_SAFE_verdict": 87
+          }
+        }
+      }
+    }
+  },
+  "note": "crossfit_val numbers are out-of-fold over validation websites. Each calibrator is fitted on all of validation. The test split was not read."
+}

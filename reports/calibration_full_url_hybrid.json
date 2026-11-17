@@ -1,0 +1,471 @@
+{
+  "run": "full_url_hybrid",
+  "mode": "full_url",
+  "created_at": "2026-11-16T13:00:54+00:00",
+  "checkpoint_sha256": "74ad76f04ec70019cb277a338de0bfde0b89db49204c20c2d808b983936a0cf1",
+  "calibrator": {
+    "format_version": 1,
+    "type": "platt_three_outcome",
+    "a": 0.47692651670917846,
+    "b": -0.4179539222145769,
+    "t_phishing": 0.9192239388508664,
+    "t_safe": 0.06077746537071981
+  },
+  "budgets": {
+    "max_false_alarm": 0.001,
+    "max_missed": 0.05
+  },
+  "fitted_on": {
+    "split": "val",
+    "sha256": "72fd08bb56b2db5e53a45d6d08dfa2954a97919bb6775b27859f5c867536760f",
+    "rows": 12338,
+    "phishing_rate": 0.17506889285135355
+  },
+  "val": {
+    "calibration": {
+      "uncalibrated": {
+        "ece": 0.0281408398496018,
+        "brier": 0.037540809175886994
+      },
+      "calibrated": {
+        "ece": 0.004188673906096219,
+        "brier": 0.034802255679692834
+      }
+    },
+    "outcomes": {
+      "thresholds": {
+        "t_phishing": 0.9192239388508664,
+        "t_safe": 0.06077746537071981
+      },
+      "counts": {
+        "benign": {
+          "PHISHING": 10,
+          "UNCERTAIN": 1710,
+          "LIKELY_SAFE": 8458
+        },
+        "phishing": {
+          "PHISHING": 1295,
+          "UNCERTAIN": 757,
+          "LIKELY_SAFE": 108
+        }
+      },
+      "rates": {
+        "benign": {
+          "PHISHING": 0.0009825112988799372,
+          "UNCERTAIN": 0.16800943210846925,
+          "LIKELY_SAFE": 0.8310080565926509
+        },
+        "phishing": {
+          "PHISHING": 0.5995370370370371,
+          "UNCERTAIN": 0.350462962962963,
+          "LIKELY_SAFE": 0.05
+        }
+      },
+      "false_alarm_rate": 0.0009825112988799372,
+      "phishing_caught_rate": 0.5995370370370371,
+      "missed_rate": 0.05,
+      "uncertain_share_in_this_split": 0.19995136975198574,
+      "projected_by_phishing_base_rate": {
+        "0.01": {
+          "precision_of_PHISHING": 0.860407822749791,
+          "phishing_among_LIKELY_SAFE": 0.0006073873048295347,
+          "uncertain_share": 0.16983396741701418
+        },
+        "0.05": {
+          "precision_of_PHISHING": 0.9698033465014484,
+          "phishing_among_LIKELY_SAFE": 0.003156734439172538,
+          "uncertain_share": 0.17713210865119391
+        }
+      }
+    }
+  },
+  "threshold_grid_val": [
+    {
+      "max_false_alarm": 0.001,
+      "max_missed": 0.02,
+      "t_phishing": 0.9192239388508664,
+      "t_safe": 0.012907623380468594,
+      "caught": 0.5995370370370371,
+      "precision_of_PHISHING@0.01": 0.860407822749791,
+      "uncertain_share@0.01": 0.39356091024213447,
+      "precision_of_PHISHING@0.05": 0.9698033465014484,
+      "uncertain_share@0.05": 0.393035441365909
+    },
+    {
+      "max_false_alarm": 0.001,
+      "max_missed": 0.05,
+      "t_phishing": 0.9192239388508664,
+      "t_safe": 0.06077746537071981,
+      "caught": 0.5995370370370371,
+      "precision_of_PHISHING@0.01": 0.860407822749791,
+      "uncertain_share@0.01": 0.16983396741701418,
+      "precision_of_PHISHING@0.05": 0.9698033465014484,
+      "uncertain_share@0.05": 0.17713210865119391
+    },
+    {
+      "max_false_alarm": 0.001,
+      "max_missed": 0.1,
+      "t_phishing": 0.9192239388508664,
+      "t_safe": 0.17631907746386144,
+      "caught": 0.5995370370370371,
+      "precision_of_PHISHING@0.01": 0.860407822749791,
+      "uncertain_share@0.01": 0.057085981565176885,
+      "precision_of_PHISHING@0.05": 0.9698033465014484,
+      "uncertain_share@0.05": 0.06691939495498643
+    },
+    {
+      "max_false_alarm": 0.005,
+      "max_missed": 0.02,
+      "t_phishing": 0.7880580741418541,
+      "t_safe": 0.012907623380468594,
+      "caught": 0.7296296296296296,
+      "precision_of_PHISHING@0.01": 0.6000378265759228,
+      "uncertain_share@0.01": 0.38836923957264397,
+      "precision_of_PHISHING@0.05": 0.8865830137170438,
+      "uncertain_share@0.05": 0.38279726880053566
+    },
+    {
+      "max_false_alarm": 0.005,
+      "max_missed": 0.05,
+      "t_phishing": 0.7880580741418541,
+      "t_safe": 0.06077746537071981,
+      "caught": 0.7296296296296296,
+      "precision_of_PHISHING@0.01": 0.6000378265759228,
+      "uncertain_share@0.01": 0.1646422967475237,
+      "precision_of_PHISHING@0.05": 0.8865830137170438,
+      "uncertain_share@0.05": 0.1668939360858205
+    },
+    {
+      "max_false_alarm": 0.005,
+      "max_missed": 0.1,
+      "t_phishing": 0.7880580741418541,
+      "t_safe": 0.17631907746386144,
+      "caught": 0.7296296296296296,
+      "precision_of_PHISHING@0.01": 0.6000378265759228,
+      "uncertain_share@0.01": 0.05189431089568641,
+      "precision_of_PHISHING@0.05": 0.8865830137170438,
+      "uncertain_share@0.05": 0.05668122238961304
+    },
+    {
+      "max_false_alarm": 0.01,
+      "max_missed": 0.02,
+      "t_phishing": 0.6433265763200899,
+      "t_safe": 0.012907623380468594,
+      "caught": 0.787962962962963,
+      "precision_of_PHISHING@0.01": 0.44508226399069534,
+      "uncertain_share@0.01": 0.38282520669126585,
+      "precision_of_PHISHING@0.05": 0.8069200311011796,
+      "uncertain_share@0.05": 0.37512033489079566
+    },
+    {
+      "max_false_alarm": 0.01,
+      "max_missed": 0.05,
+      "t_phishing": 0.6433265763200899,
+      "t_safe": 0.06077746537071981,
+      "caught": 0.787962962962963,
+      "precision_of_PHISHING@0.01": 0.44508226399069534,
+      "uncertain_share@0.01": 0.1590982638661456,
+      "precision_of_PHISHING@0.05": 0.8069200311011796,
+      "uncertain_share@0.05": 0.1592170021760806
+    },
+    {
+      "max_false_alarm": 0.01,
+      "max_missed": 0.1,
+      "t_phishing": 0.6433265763200899,
+      "t_safe": 0.17631907746386144,
+      "caught": 0.787962962962963,
+      "precision_of_PHISHING@0.01": 0.44508226399069534,
+      "uncertain_share@0.01": 0.04635027801430827,
+      "precision_of_PHISHING@0.05": 0.8069200311011796,
+      "uncertain_share@0.05": 0.04900428847987307
+    }
+  ],
+  "evaluated_splits": [
+    "val",
+    "test"
+  ],
+  "note": "Validation numbers are in-sample for calibration and thresholds; the test numbers are the honest estimate.",
+  "test": {
+    "metrics": {
+      "n": 12850,
+      "n_phishing": 2051,
+      "n_benign": 10799,
+      "at_threshold": {
+        "threshold": 0.5,
+        "tp": 1720,
+        "fp": 210,
+        "fn": 331,
+        "tn": 10589,
+        "precision": 0.8911917098445595,
+        "recall": 0.8386153096050707,
+        "f1": 0.864104496357699,
+        "fpr": 0.019446245022687287
+      },
+      "brier": 0.033589106145220406,
+      "ece": 0.01270143342814288,
+      "roc_auc": 0.982625971335898,
+      "pr_auc": 0.9288764216903834,
+      "recall_at_fpr": {
+        "0.001": {
+          "recall": 0.31935641150658217,
+          "fpr": 0.0009260116677470136,
+          "threshold": 0.992460711148652
+        },
+        "0.01": {
+          "recall": 0.7157484154071185,
+          "fpr": 0.009908324844893046,
+          "threshold": 0.8066681932908876
+        },
+        "0.05": {
+          "recall": 0.9141882008776206,
+          "fpr": 0.049356421890915825,
+          "threshold": 0.1999819654093041
+        }
+      }
+    },
+    "slices": {
+      "all": {
+        "n": 12850,
+        "n_phishing": 2051,
+        "n_benign": 10799,
+        "at_threshold": {
+          "threshold": 0.5,
+          "tp": 1720,
+          "fp": 210,
+          "fn": 331,
+          "tn": 10589,
+          "precision": 0.8911917098445595,
+          "recall": 0.8386153096050707,
+          "f1": 0.864104496357699,
+          "fpr": 0.019446245022687287
+        },
+        "brier": 0.033589106145220406,
+        "ece": 0.01270143342814288,
+        "roc_auc": 0.982625971335898,
+        "pr_auc": 0.9288764216903834,
+        "recall_at_fpr": {
+          "0.001": {
+            "recall": 0.31935641150658217,
+            "fpr": 0.0009260116677470136,
+            "threshold": 0.992460711148652
+          },
+          "0.01": {
+            "recall": 0.7157484154071185,
+            "fpr": 0.009908324844893046,
+            "threshold": 0.8066681932908876
+          },
+          "0.05": {
+            "recall": 0.9141882008776206,
+            "fpr": 0.049356421890915825,
+            "threshold": 0.1999819654093041
+          }
+        }
+      },
+      "homepage_only": {
+        "n": 3307,
+        "n_phishing": 1114,
+        "n_benign": 2193,
+        "at_threshold": {
+          "threshold": 0.5,
+          "tp": 979,
+          "fp": 32,
+          "fn": 135,
+          "tn": 2161,
+          "precision": 0.9683481701285855,
+          "recall": 0.8788150807899462,
+          "f1": 0.9214117647058823,
+          "fpr": 0.01459188326493388
+        },
+        "brier": 0.041508234148601116,
+        "ece": 0.034595958879939354,
+        "roc_auc": 0.9766848328409065,
+        "pr_auc": 0.9721908731340534,
+        "recall_at_fpr": {
+          "0.001": {
+            "recall": 0.7836624775583483,
+            "fpr": 0.0009119927040583675,
+            "threshold": 0.8152899629876307
+          },
+          "0.01": {
+            "recall": 0.8447037701974865,
+            "fpr": 0.009575923392612859,
+            "threshold": 0.627849357941165
+          },
+          "0.05": {
+            "recall": 0.9228007181328546,
+            "fpr": 0.04879160966712266,
+            "threshold": 0.2534268440651344
+          }
+        }
+      },
+      "with_path_or_query": {
+        "n": 9543,
+        "n_phishing": 937,
+        "n_benign": 8606,
+        "at_threshold": {
+          "threshold": 0.5,
+          "tp": 741,
+          "fp": 178,
+          "fn": 196,
+          "tn": 8428,
+          "precision": 0.8063112078346029,
+          "recall": 0.7908217716115261,
+          "f1": 0.7984913793103449,
+          "fpr": 0.02068324424819893
+        },
+        "brier": 0.030844837434418765,
+        "ece": 0.01411783244000486,
+        "roc_auc": 0.9824479012557568,
+        "pr_auc": 0.8602263955082882,
+        "recall_at_fpr": {
+          "0.001": {
+            "recall": 0.22305229455709713,
+            "fpr": 0.0009295840111550081,
+            "threshold": 0.9932349222280038
+          },
+          "0.01": {
+            "recall": 0.5923159018143009,
+            "fpr": 0.009993028119916338,
+            "threshold": 0.8446944316452831
+          },
+          "0.05": {
+            "recall": 0.9060832443970117,
+            "fpr": 0.04984894259818731,
+            "threshold": 0.15569570816952572
+          }
+        }
+      },
+      "www_host": {
+        "n": 3910,
+        "n_phishing": 114,
+        "n_benign": 3796,
+        "at_threshold": {
+          "threshold": 0.5,
+          "tp": 58,
+          "fp": 0,
+          "fn": 56,
+          "tn": 3796,
+          "precision": 1.0,
+          "recall": 0.5087719298245614,
+          "f1": 0.6744186046511628,
+          "fpr": 0.0
+        },
+        "brier": 0.011021902909766105,
+        "ece": 0.007996615343118964,
+        "roc_auc": 0.9892962120791969,
+        "pr_auc": 0.8700689190639782,
+        "recall_at_fpr": {
+          "0.001": {
+            "recall": 0.6403508771929824,
+            "fpr": 0.0005268703898840885,
+            "threshold": 0.3052982685446594
+          },
+          "0.01": {
+            "recall": 0.7982456140350878,
+            "fpr": 0.009747102212855638,
+            "threshold": 0.12618898746697393
+          },
+          "0.05": {
+            "recall": 0.9385964912280702,
+            "fpr": 0.03714436248682824,
+            "threshold": 0.04464671801886027
+          }
+        }
+      },
+      "non_www_host": {
+        "n": 8940,
+        "n_phishing": 1937,
+        "n_benign": 7003,
+        "at_threshold": {
+          "threshold": 0.5,
+          "tp": 1662,
+          "fp": 210,
+          "fn": 275,
+          "tn": 6793,
+          "precision": 0.8878205128205128,
+          "recall": 0.8580278781621063,
+          "f1": 0.8726699921239169,
+          "fpr": 0.029987148364986435
+        },
+        "brier": 0.043459102191151754,
+        "ece": 0.018662868297136672,
+        "roc_auc": 0.9777960783972589,
+        "pr_auc": 0.9345281462464018,
+        "recall_at_fpr": {
+          "0.001": {
+            "recall": 0.31440371708828085,
+            "fpr": 0.000856775667571041,
+            "threshold": 0.9933303755566681
+          },
+          "0.01": {
+            "recall": 0.6701084150748581,
+            "fpr": 0.009852920177066972,
+            "threshold": 0.8834983800467361
+          },
+          "0.05": {
+            "recall": 0.9019101703665462,
+            "fpr": 0.04926460088533486,
+            "threshold": 0.3033985189581078
+          }
+        }
+      }
+    },
+    "calibration": {
+      "uncalibrated": {
+        "ece": 0.02461050921732193,
+        "brier": 0.03569156767298844
+      },
+      "calibrated": {
+        "ece": 0.01270143342814288,
+        "brier": 0.033589106145220406
+      }
+    },
+    "outcomes": {
+      "thresholds": {
+        "t_phishing": 0.9192239388508664,
+        "t_safe": 0.06077746537071981
+      },
+      "counts": {
+        "benign": {
+          "PHISHING": 60,
+          "UNCERTAIN": 1818,
+          "LIKELY_SAFE": 8921
+        },
+        "phishing": {
+          "PHISHING": 1262,
+          "UNCERTAIN": 745,
+          "LIKELY_SAFE": 44
+        }
+      },
+      "rates": {
+        "benign": {
+          "PHISHING": 0.005556070006482082,
+          "UNCERTAIN": 0.16834892119640707,
+          "LIKELY_SAFE": 0.8260950087971108
+        },
+        "phishing": {
+          "PHISHING": 0.6153096050706972,
+          "UNCERTAIN": 0.3632374451487079,
+          "LIKELY_SAFE": 0.02145294978059483
+        }
+      },
+      "false_alarm_rate": 0.005556070006482082,
+      "phishing_caught_rate": 0.6153096050706972,
+      "missed_rate": 0.02145294978059483,
+      "uncertain_share_in_this_split": 0.19945525291828795,
+      "projected_by_phishing_base_rate": {
+        "0.01": {
+          "precision_of_PHISHING": 0.5279993497416129,
+          "phishing_among_LIKELY_SAFE": 0.00026224542270303114,
+          "uncertain_share": 0.1702978064359301
+        },
+        "0.05": {
+          "precision_of_PHISHING": 0.8535594387190463,
+          "phishing_among_LIKELY_SAFE": 0.0013649295329375831,
+          "uncertain_share": 0.1780933473940221
+        }
+      }
+    },
+    "sha256": "379a2d84df83c4fe641b8ecf77b1852cf77a7bdfeba4be8e9e3402a36225ba0d"
+  }
+}
