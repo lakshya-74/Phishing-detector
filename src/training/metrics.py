@@ -1,10 +1,16 @@
 """Evaluation metrics for a phishing score in [0, 1] (1 = phishing).
 
-Accuracy is deliberately not the headline: with ~16% phishing a model that
-always says "benign" is 84% accurate. We report ranking quality (ROC-AUC,
-PR-AUC), the operating point that matters on a device (how many phishing URLs
-we catch while wrongly flagging at most 0.1% / 1% of safe URLs), and
-calibration (Brier score, ECE), which the three-outcome thresholds rely on.
+Accuracy is reported but deliberately not the headline: with ~16% phishing a
+model that always says "benign" is 84% accurate. The headline numbers are
+ranking quality (ROC-AUC, PR-AUC), the operating point that matters on a device
+(how many phishing URLs we catch while wrongly flagging at most 0.1% / 1% of
+safe URLs), and calibration (Brier score, ECE), which the three-outcome
+thresholds rely on.
+
+confusion_matrix is [[tn, fp], [fn, tp]]: rows = true label (safe, phishing),
+columns = prediction at `threshold` (safe, phishing). The three-outcome
+version (PHISHING / UNCERTAIN / LIKELY_SAFE per class) is in the calibration
+and ensemble reports under "counts".
 """
 from __future__ import annotations
 
@@ -67,6 +73,8 @@ def binary_metrics(y: np.ndarray, score: np.ndarray, threshold: float = 0.5) -> 
         "f1": (2 * precision * recall / (precision + recall)
                if precision and recall else (0.0 if precision is not None and recall is not None else None)),
         "fpr": fp / (fp + tn) if fp + tn else None,
+        "accuracy": (tp + tn) / len(y),
+        "confusion_matrix": [[tn, fp], [fn, tp]],
     }
     out["brier"] = float(np.mean((score - y) ** 2))
     out["ece"] = expected_calibration_error(y, score)

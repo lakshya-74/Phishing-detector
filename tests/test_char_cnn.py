@@ -52,6 +52,44 @@ def test_bad_config(kw):
         CharCNNConfig(**({"vocab_size": 97} | kw))
 
 
+# ---------------------------------------------------------------- data loading
+def _tensors(n=10):
+    return train_cnn.Tensors(ids=torch.randint(1, 50, (n, 12), dtype=torch.uint8),
+                             lengths=torch.randint(1, 13, (n,)), features=torch.randn(n, 3),
+                             y=(torch.arange(n) % 2).float())
+
+
+def test_shuffled_loader_matches_one_permutation_per_epoch():
+    t = _tensors(10)
+    loader = train_cnn.make_loader(t, batch_size=4, generator=torch.Generator().manual_seed(5))
+    ref = torch.Generator().manual_seed(5)
+    for _ in range(2):                                      # two epochs
+        perm = torch.randperm(10, generator=ref)
+        batches = list(loader)
+        assert [len(b[2]) for b in batches] == [4, 4, 2]    # last batch is partial
+        for (ids, feats, y), idx in zip(batches, (perm[0:4], perm[4:8], perm[8:10])):
+            expected_ids, expected_feats, expected_y = train_cnn._batch(t, idx)
+            assert torch.equal(ids, expected_ids) and torch.equal(feats, expected_feats)
+            assert torch.equal(y, expected_y)
+
+
+def test_loader_leaves_the_global_rng_alone():
+    """Dropout draws from the global RNG; the loader must not, or training changes."""
+    t = _tensors(10)
+    torch.manual_seed(0)
+    before = torch.get_rng_state()
+    for gen in (torch.Generator().manual_seed(1), None):
+        list(train_cnn.make_loader(t, batch_size=3, generator=gen))
+    assert torch.equal(before, torch.get_rng_state())
+
+
+def test_ordered_loader_keeps_input_order():
+    t = _tensors(7)
+    loader = train_cnn.make_loader(t, batch_size=3)
+    assert isinstance(loader.dataset, train_cnn.URLDataset) and len(loader.dataset) == 7
+    assert torch.equal(torch.cat([y for _, _, y in loader]), t.y)
+
+
 # ---------------------------------------------------------------- training
 @pytest.fixture
 def tiny(tmp_path):

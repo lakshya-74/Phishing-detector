@@ -61,6 +61,13 @@ def test_binary_metrics_perfect_and_counts():
     assert m["recall_at_fpr"]["0.001"]["recall"] == 1.0
 
 
+def test_binary_metrics_accuracy_and_confusion_matrix():
+    y = np.array([0, 0, 0, 1, 1])
+    at = binary_metrics(y, np.array([0.1, 0.6, 0.2, 0.9, 0.3]))["at_threshold"]
+    assert at["confusion_matrix"] == [[2, 1], [1, 1]]        # [[tn, fp], [fn, tp]]
+    assert at["accuracy"] == pytest.approx(3 / 5)
+
+
 def test_binary_metrics_single_class_has_no_ranking():
     m = binary_metrics(np.array([0, 0]), np.array([0.1, 0.7]))
     assert "roc_auc" not in m and m["at_threshold"]["fpr"] == 0.5 and m["at_threshold"]["recall"] is None

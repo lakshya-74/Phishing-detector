@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
+from torch.utils.data import DataLoader, Dataset, Sampler
 
 from src.models.char_cnn import (CHECKPOINT_FORMAT, CharCNN, CharCNNConfig, config_to_dict,
                                  count_parameters)
@@ -103,15 +104,69 @@ def _batch(t: Tensors, idx: torch.Tensor):
     return ids, (None if t.features is None else t.features[idx]), t.y[idx]
 
 
+class URLDataset(Dataset):
+    """Tokenized URLs (+ scaled features) held on the training device.
+
+    Indexed with a whole batch of row numbers at once (the DataLoader runs with
+    batch_size=None and a batch sampler), so one batch is one vectorized slice
+    instead of `batch_size` separate Python calls.
+    """
+
+    def __init__(self, tensors: Tensors):
+        self.tensors = tensors
+
+    def __len__(self) -> int:
+        return len(self.tensors.y)
+
+    def __getitem__(self, idx: torch.Tensor):
+        return _batch(self.tensors, idx)
+
+
+class ShuffledBatches(Sampler):
+    """One random permutation per epoch (from `generator`), cut into batches."""
+
+    def __init__(self, n: int, batch_size: int, generator: torch.Generator, device: torch.device):
+        self.n, self.batch_size, self.generator, self.device = n, batch_size, generator, device
+
+    def __len__(self) -> int:
+        return -(-self.n // self.batch_size)
+
+    def __iter__(self):
+        perm = torch.randperm(self.n, generator=self.generator).to(self.device)
+        for start in range(0, self.n, self.batch_size):
+            yield perm[start:start + self.batch_size]
+
+
+class OrderedBatches(Sampler):
+    """Rows 0..n-1 in order, in batches (prediction keeps the input order)."""
+
+    def __init__(self, n: int, batch_size: int, device: torch.device):
+        self.n, self.batch_size, self.device = n, batch_size, device
+
+    def __len__(self) -> int:
+        return -(-self.n // self.batch_size)
+
+    def __iter__(self):
+        for start in range(0, self.n, self.batch_size):
+            yield torch.arange(start, min(start + self.batch_size, self.n), device=self.device)
+
+
+def make_loader(t: Tensors, batch_size: int, generator: torch.Generator | None = None) -> DataLoader:
+    """Shuffled batches when a generator is given (training), ordered batches otherwise."""
+    n, device = len(t.y), t.y.device
+    sampler = (OrderedBatches(n, batch_size, device) if generator is None
+               else ShuffledBatches(n, batch_size, generator, device))
+    # Data already sits on the device: no worker processes, no pinned memory. Every
+    # pass draws a worker seed from the loader's generator; a private one keeps that
+    # draw away from the global RNG that dropout uses (training stays reproducible).
+    return DataLoader(URLDataset(t), batch_size=None, sampler=sampler, num_workers=0,
+                      generator=torch.Generator())
+
+
 @torch.no_grad()
 def predict_logits(model: CharCNN, t: Tensors, batch_size: int = 1024) -> np.ndarray:
     model.eval()
-    out = []
-    n = len(t.y)
-    for start in range(0, n, batch_size):
-        idx = torch.arange(start, min(start + batch_size, n), device=t.y.device)
-        ids, feats, _ = _batch(t, idx)
-        out.append(model(ids, feats).float().cpu())
+    out = [model(ids, feats).float().cpu() for ids, feats, _ in make_loader(t, batch_size)]
     return torch.cat(out).double().numpy()
 
 
@@ -225,14 +280,13 @@ def train(cfg: TrainConfig, *, splits: Path = SPLITS_DIR, run_dir: Path | None =
                 "data_sha256": data_hashes, "torch_version": str(torch.__version__)}
 
     n = len(tr.y)
+    train_loader = make_loader(tr, cfg.batch_size, generator=gen)
     while (state["epoch"] < cfg.epochs and not state["stopped_early"]):
         epoch = state["epoch"] + 1
         t0 = time.perf_counter()
         model.train()
-        perm = torch.randperm(n, generator=gen).to(dev)
         total = 0.0
-        for start in range(0, n, cfg.batch_size):
-            ids, feats, y = _batch(tr, perm[start:start + cfg.batch_size])
+        for ids, feats, y in train_loader:
             loss = loss_fn(model(ids, feats), y)
             opt.zero_grad(set_to_none=True)
             loss.backward()

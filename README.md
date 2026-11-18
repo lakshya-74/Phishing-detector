@@ -148,6 +148,15 @@ python -m src.training.train_cnn --device cuda      # refuse to fall back to CPU
 - Model: character embedding → Conv1d (widths 3/5/7) → masked max-pool →
   small MLP (~90k parameters, about 0.4 MB in float32). Padding is masked, so
   the result does not depend on how much padding follows the URL.
+- **Data feeding:** a PyTorch `Dataset` (`URLDataset`) and `DataLoader`. A
+  batch sampler hands over one whole batch per call, and the data stays on the
+  GPU. Each epoch uses one shuffle from a seeded generator. The loader has its
+  own private generator, so dropout's random numbers are untouched. Training
+  is bit-identical to the earlier hand-written loop, which was checked on the
+  CNN, the hybrid and the shipped model's predictions.
+- **Reports:** accuracy and the confusion matrix `[[tn, fp], [fn, tp]]` are
+  included at threshold 0.5, as reference points only. The three-outcome
+  version is under `counts` in the calibration and ensemble reports.
 - After every epoch the full state goes to `artifacts/runs/<mode>_<model>/last.pt`;
   running the same command again **resumes**. The best epoch (validation
   PR-AUC) is kept in `best.pt`, and training stops after `--patience` epochs
@@ -345,6 +354,14 @@ alarm and 5% missed (every website counts once):
 - **What a verdict means in practice:** at 1% phishing traffic a PHISHING
   verdict is right about 63% of the time. The product should present it as
   "high risk, here is why", not as proof.
+- **Deviation from the specification (decided 2026-11-18).** The spec says
+  "the central detection mechanism must be a trained neural network". In this
+  combination the neural hybrid is one of two learned members, each with a
+  comparable say. Neither member uses keyword rules. It was kept because
+  validation justified it. The hybrid alone (PR-AUC 0.933, 21% UNCERTAIN) is
+  the documented fallback.
+- **Cost on the device:** it runs the PyTorch hybrid (or its exported form)
+  plus the scikit-learn n-gram member.
 
 The shipped model is three files, kept out of Git under `artifacts/`:
 
