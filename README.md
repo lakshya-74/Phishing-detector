@@ -23,7 +23,9 @@ Phishing-detection module of the Bharat AI on-device security assistant.
 | Threat intelligence: answer cache with separate TTL policies (`src/intelligence/cache.py`) | done, tested |
 | Threat intelligence: online lookups, Google Safe Browsing v5 (`src/intelligence/safe_browsing.py`) | done, tested offline; off by default; not yet tried against the real API |
 | URLhaus feed | skipped (decided 2026-11-20): malware, not phishing; terms restrict AI products |
-| Inference engine, API, ARM deployment | not started |
+| Inference engine, step 1: model bundle, runtime, decision engine, single/batch predict (`src/inference/`) | done, tested; run on the real model |
+| Inference engine, step 2: queues, concurrency, background Google lookups, benchmarks | next |
+| API, ARM deployment | not started |
 
 ## Requirements
 
@@ -558,6 +560,75 @@ key for this window only; don't use `setx`, which stores it permanently.
   Local List Mode. This is the plain real-time check with a local cache.
   Host suffixes use the ICANN part of the Public Suffix List, which gives a
   superset of expressions, so nothing is missed.
+
+## Inference (Phase 4)
+
+```powershell
+python -m src.inference.bundle build          # artifacts/runs -> models/full_url (Git-ignored)
+python -m src.inference.bundle verify
+python -m src.inference.predict "https://example.com/login" "https://bit.ly/abc"
+python -m src.inference.predict example.com --domain
+python -m src.inference.predict URL --json
+```
+
+- **Model bundle** (`models/full_url/`): `cnn.pt`, `ngram.npz`,
+  `redirectors.txt` and `version.json`.
+  - `version.json` holds the calibrator, thresholds, validation numbers, data
+    and library versions, and the SHA-256 of every file. It is the one
+    manifest that replaces the spec's separate `model_config.json`,
+    `tokenizer.json`, `feature_config.json` and `version.json`.
+  - Loading refuses any file whose hash does not match.
+  - The model version comes from the content (for example
+    `full_url-edb8f2cc8642`), so the same model always has the same version.
+  - To deploy, copy the whole folder.
+- **Runtime** ([src/inference/runtime.py](src/inference/runtime.py)): CPU
+  scoring that mirrors training exactly. A test checks it against the
+  training code at batch sizes 1, 7 and 64.
+- **Decision engine** ([src/inference/decision_engine.py](src/inference/decision_engine.py)),
+  rules in order. Threat intelligence can only raise the risk.
+  1. The exact page or host is listed as phishing: PHISHING.
+  2. A link shortener or QR redirector: UNCERTAIN.
+  3. No model result (domain-only input, model failure): UNCERTAIN.
+  4. Otherwise the calibrated model.
+  5. A malware listing: at least UNCERTAIN, but never labelled phishing.
+  6. A listed sibling host: LIKELY_SAFE becomes UNCERTAIN.
+- **Predictor** ([src/inference/predict.py](src/inference/predict.py)):
+  - normalizes the input, de-duplicates it and checks the cache (exact URL +
+    model version);
+  - scores the misses in batches and looks them up in the local threat
+    database;
+  - gives invalid input its own error result and keeps the input order.
+- **No domain-only model yet:** hostnames are checked against threat
+  intelligence only and otherwise answered UNCERTAIN, as the spec requires.
+
+First real run (laptop CPU, 2026-11-20):
+
+| Input | Decision | Why |
+|---|---|---|
+| `https://en.wikipedia.org/wiki/Phishing` | LIKELY_SAFE (0.003) | model |
+| `http://paypal-account-verify.secure-login-update.xyz/signin/webscr?cmd=_login` (made up) | PHISHING (0.998) | model |
+| a page from the PhishTank feed / another page on that host | PHISHING | threat intel (exact / hostname) |
+| `https://bit.ly/3abcXYZ` | UNCERTAIN | rule: destination hidden |
+| `https://www.google.com/` | UNCERTAIN (0.345) | model |
+| **`https://github.com/login`** | **PHISHING (0.968)** | **model: a false alarm** |
+
+The last row is the "real login page" blind spot found in Phase 2. A
+possible guard: on very popular websites, the model alone may say at most
+UNCERTAIN, and only a threat-intel listing gives PHISHING. It never says
+LIKELY_SAFE, so no domain is marked safe. Measured on validation, in-sample,
+2,402 safe and 1,525 phishing websites:
+
+| Guard on Tranco top | Safe websites flagged PHISHING | Phishing websites called PHISHING |
+|---|---|---|
+| none | 24 | 1,290 (84.6%) |
+| 1,000 | 23 | 1,286 (84.3%) |
+| 10,000 | 21 | 1,278 (83.8%) |
+| 100,000 | 10 | 1,257 (82.4%) |
+
+Validation has few top-1,000 websites (7 safe), while real browsing is mostly
+on them. The guard's real benefit is therefore larger than this table shows,
+and so is its cost on phishing hosted on big platforms. Known phishing pages
+on those platforms are still caught by the exact-URL threat lists.
 
 ## Training on a GPU PC (Windows)
 
