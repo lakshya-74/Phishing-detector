@@ -45,6 +45,16 @@ def private_registered_domain(host: str) -> str:
     return f"{ext.domain}.{ext.suffix}" if ext.domain and ext.suffix else ""
 
 
+def public_registered_domain(host: str) -> str:
+    """Registered domain by the ICANN public suffixes only ('' if unknown).
+
+    'a.b.example.co.uk' -> 'example.co.uk' and 'evil.web.app' -> 'web.app'
+    (private suffixes ignored). Used where an external standard says eTLD+1.
+    """
+    ext = _EXTRACTOR(host)
+    return f"{ext.domain}.{ext.suffix}" if ext.domain and ext.suffix else ""
+
+
 class InvalidURLError(ValueError):
     """Raised for input that cannot be safely normalized.
 

@@ -51,8 +51,8 @@ from src.data.split_dataset import load_redirectors
 from src.preprocessing.url_normalizer import (InvalidURLError, NormalizedURL, normalize_url,
                                               private_registered_domain)
 
-from .results import (EXACT_URL, HOSTNAME, MATCH, NO_MATCH, REGISTERED_DOMAIN, UNAVAILABLE,
-                      IntelMatch, IntelResult)
+from .results import (EXACT_URL, HOSTNAME, MATCH, NO_MATCH, PHISHING_THREAT, REGISTERED_DOMAIN,
+                      UNAVAILABLE, IntelMatch, IntelResult)
 
 SCHEMA_VERSION = 1
 CONFIG_PATH = Path("config/threat_intel.json")
@@ -344,7 +344,8 @@ def _find(conn: sqlite3.Connection, n: NormalizedURL, when: str) -> tuple[IntelM
     for level, where, params in queries:
         for source, count, first, last, expires, ids in conn.execute(_AGG.format(where=where), params):
             matches.append(IntelMatch(level, source, int(count), first, last, expires,
-                                      tuple((ids or "").split()[:MAX_IDS])))
+                                      tuple((ids or "").split()[:MAX_IDS]),
+                                      threat_types=(PHISHING_THREAT,)))   # both feeds are phishing-only
     return tuple(matches)
 
 

@@ -21,8 +21,8 @@ Phishing-detection module of the Bharat AI on-device security assistant.
 | Per-website budgets, n-gram model without pickle, CNN + n-gram combination (`src/training/ensemble.py`) | done, tested; run on GPU: **hybrid + n-gram chosen for full_url** |
 | Threat intelligence: local database + matcher (`src/intelligence/`) | done, tested; built from real feeds |
 | Threat intelligence: answer cache with separate TTL policies (`src/intelligence/cache.py`) | done, tested |
-| Threat intelligence: online lookups (Google Safe Browsing v5) | researched; waiting on licence and key decisions |
-| URLhaus feed | researched; not integrated (malware, not phishing; terms restrict AI products) |
+| Threat intelligence: online lookups, Google Safe Browsing v5 (`src/intelligence/safe_browsing.py`) | done, tested offline; off by default; not yet tried against the real API |
+| URLhaus feed | skipped (decided 2026-11-20): malware, not phishing; terms restrict AI products |
 | Inference engine, API, ARM deployment | not started |
 
 ## Requirements
@@ -504,6 +504,60 @@ What the official pages say today:
 - **VirusTotal public API: not used.** It allows 4 requests a minute and 500
   a day, and cannot be used in products or services that earn money.
   Source: [public vs premium API](https://docs.virustotal.com/reference/public-vs-premium-api).
+
+### Online lookups: Google Safe Browsing v5 (optional, off by default)
+
+[src/intelligence/safe_browsing.py](src/intelligence/safe_browsing.py) only
+runs when the environment variable `SAFE_BROWSING_API_KEY` is set. Without
+it, every check returns `unavailable` / `disabled:no_api_key`, and the rest
+of the system is unaffected.
+
+```bat
+python -m src.intelligence.safe_browsing expressions "https://a.b.example.com/1/2.html?x=1"
+set SAFE_BROWSING_API_KEY=your-key-here
+python -m src.intelligence.safe_browsing check "https://example.com/"
+```
+
+`expressions` works offline and shows what would be hashed. `set` keeps the
+key for this window only; don't use `setx`, which stores it permanently.
+
+- **What leaves the device:** Google's canonicalization turns the URL into
+  up to 30 host/path expressions, for example `a.b.com/1/` and `b.com/`.
+  Only the first 4 bytes of each expression's SHA-256 hash are sent. The
+  match is decided locally by comparing full 32-byte hashes. localhost,
+  private IPs and names without a public suffix are never sent. The key
+  travels in the `x-goog-api-key` header, which is Google Cloud's
+  recommended form. `"api_key_in_header": false` in
+  [config/safe_browsing.json](config/safe_browsing.json) switches to `?key=`.
+- **Rules followed:**
+  - Unknown threat types or attributes make the client ignore that detail.
+  - `CANARY` and `FRAME_ONLY` details don't count as a match for a page.
+  - Positive answers are cached for at most 30 minutes, because the terms
+    forbid warning on older data. Empty answers are cached for
+    `cacheDuration`.
+  - Matches carry `threat_types` (`phishing`, `malware`, ...) and
+    `attribution: "Advisory provided by Google"`.
+  - Use is non-commercial only.
+- **Failures:**
+  - 2-second timeout.
+  - One retry for network errors and 5xx.
+  - No retry for 4xx.
+  - Token-bucket rate limit, 60 requests a minute by default.
+  - Exponential back-off: 60 s, doubling, up to 30 min. `Retry-After` on a
+    429 is respected.
+
+  Every failure is `unavailable`, never `no_match`.
+- **Tests:** they cover all 33 canonicalization examples Google publishes,
+  the v5 IPv6 and expression examples, and a fake Google server for caching,
+  errors, rate limits and privacy.
+- **Not yet verified against the real API:**
+  - whether the header form of the key is accepted;
+  - whether URL-safe base64 prefixes are accepted. The docs say only
+    "base64", and Google's example has no padding.
+- **Not implemented:** the Global Cache and local hash lists of Real-Time and
+  Local List Mode. This is the plain real-time check with a local cache.
+  Host suffixes use the ICANN part of the Public Suffix List, which gives a
+  superset of expressions, so nothing is missed.
 
 ## Training on a GPU PC (Windows)
 

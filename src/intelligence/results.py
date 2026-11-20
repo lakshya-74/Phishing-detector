@@ -25,15 +25,21 @@ EXACT_URL, HOSTNAME, REGISTERED_DOMAIN = "exact_url", "hostname", "registered_do
 LEVELS = (EXACT_URL, HOSTNAME, REGISTERED_DOMAIN)
 
 
+PHISHING_THREAT, MALWARE_THREAT = "phishing", "malware"
+UNWANTED_SOFTWARE_THREAT, HARMFUL_APP_THREAT = "unwanted_software", "harmful_application"
+
+
 @dataclass(frozen=True)
 class IntelMatch:
     level: str                    # one of LEVELS
-    source: str                   # feed name, for attribution ("phishtank", ...)
-    count: int                    # listed URLs behind this match
+    source: str                   # feed / provider name ("phishtank", "google_safe_browsing", ...)
+    count: int                    # listed URLs (or matching expressions) behind this match
     first_seen: str               # ISO-8601 UTC
     last_seen: str
     expires_at: str
     source_ids: tuple[str, ...]   # a few feed IDs (e.g. PhishTank phish_id), may be empty
+    threat_types: tuple[str, ...] = ()   # "phishing", "malware", ... (never mixed up)
+    attribution: str = ""         # text the provider requires next to a warning
 
 
 @dataclass(frozen=True)
@@ -55,6 +61,7 @@ class IntelResult:
 
     def to_dict(self) -> dict:
         out = asdict(self)
-        out["matches"] = [dict(m, source_ids=list(m["source_ids"])) for m in out["matches"]]
+        out["matches"] = [dict(m, source_ids=list(m["source_ids"]), threat_types=list(m["threat_types"]))
+                          for m in out["matches"]]
         out["strongest_level"] = self.strongest_level
         return out
