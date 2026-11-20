@@ -20,7 +20,9 @@ Phishing-detection module of the Bharat AI on-device security assistant.
 | Per-website error inspection (`src/training/inspect_errors.py`) | done, tested |
 | Per-website budgets, n-gram model without pickle, CNN + n-gram combination (`src/training/ensemble.py`) | done, tested; run on GPU: **hybrid + n-gram chosen for full_url** |
 | Threat intelligence: local database + matcher (`src/intelligence/`) | done, tested; built from real feeds |
-| Threat intelligence: TTL cache, URLhaus, optional online lookups | next |
+| Threat intelligence: answer cache with separate TTL policies (`src/intelligence/cache.py`) | done, tested |
+| Threat intelligence: online lookups (Google Safe Browsing v5) | researched; waiting on licence and key decisions |
+| URLhaus feed | researched; not integrated (malware, not phishing; terms restrict AI products) |
 | Inference engine, API, ARM deployment | not started |
 
 ## Requirements
@@ -440,6 +442,68 @@ First real build (laptop, 2026-11-17; 3 PhishTank + 3 OpenPhish snapshots):
 Most phishing in the feeds sits on big abused platforms and QR-code
 redirectors. Host-level matching there would flag legitimate services, so
 those entries match exact URLs only.
+
+### Answer cache
+
+[src/intelligence/cache.py](src/intelligence/cache.py) stores recent answers
+so repeated links cost neither a model run nor an online lookup. Settings are
+in [config/cache.json](config/cache.json).
+
+| Kind of answer | Kept for | Why |
+|---|---|---|
+| Model said PHISHING or UNCERTAIN | 1 hour | |
+| Model said LIKELY_SAFE | 15 minutes | a safe page can be turned malicious later |
+| Confirmed threat-intel match | 6 hours, never past the source's own expiry | |
+| No feed or provider lists it | 15 minutes | |
+| An online lookup failed | 60 seconds | retry soon without hammering the service |
+
+- **Keys are the exact normalized URL**, including the scheme. There is no
+  host or domain entry, so one safe page never makes its website safe.
+- **Prediction keys include the model version**, so a new model never serves
+  old answers.
+- **Keys are SHA-256 digests**, so the cache holds no readable URLs.
+- **Bounded size:** least-recently-used entries are evicted. The cache is
+  thread-safe and uses a monotonic clock. Hit rate is reported in `stats()`.
+
+### Online sources: research (2026-11-18)
+
+What the official pages say today:
+
+- **URLhaus (abuse.ch): not integrated.**
+  - It lists *malware* URLs, and its own policy says "Phishing is not Malware".
+  - Downloads need a free Auth-Key placed in the URL, and dumps must not be
+    fetched more often than every 5 minutes.
+  - The abuse.ch Terms of Use forbid using the data to "train, or otherwise
+    improve any artificial intelligence model or product" without Spamhaus'
+    written consent.
+  - The CSV columns are only documented behind a login, so they could not be
+    verified.
+
+  Sources: [URLhaus API](https://urlhaus.abuse.ch/api/),
+  [about](https://urlhaus.abuse.ch/about/),
+  [abuse.ch Terms of Use](https://abuse.ch/terms-of-use/),
+  [changelog](https://abusech-docs.spamhaus.com/changelog).
+- **Google Safe Browsing v5 (`hashes:search`): the candidate.**
+  - It sends only 4-byte prefixes of SHA-256 hashes of URL expressions,
+    never the URL. It is free, with an API key.
+  - Use is **non-commercial only** without a separate agreement.
+  - Warnings must say "suspected" or "possible", carry "Advisory provided by
+    Google", and state that accuracy cannot be guaranteed.
+  - A URL must not be warned about on Google data older than 30 minutes.
+  - Positive and negative answers must be cached for the given
+    `cacheDuration`.
+
+  Sources: [overview](https://developers.google.com/safe-browsing/reference),
+  [hashes.search](https://developers.google.com/safe-browsing/reference/rest/v5/hashes/search),
+  [usage limits](https://developers.google.com/safe-browsing/v4/usage-limits),
+  [terms](https://developers.google.com/safe-browsing/terms).
+- **Google Web Risk**, the commercial version: its Lookup API sends the full
+  URL, and its Update API keeps a local database of hashes. Pricing could not
+  be read from the page.
+  Source: [overview](https://docs.cloud.google.com/web-risk/docs/overview).
+- **VirusTotal public API: not used.** It allows 4 requests a minute and 500
+  a day, and cannot be used in products or services that earn money.
+  Source: [public vs premium API](https://docs.virustotal.com/reference/public-vs-premium-api).
 
 ## Training on a GPU PC (Windows)
 
