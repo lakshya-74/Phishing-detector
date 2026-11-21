@@ -321,6 +321,8 @@ def _is_private(n: NormalizedURL) -> bool:
 class SafeBrowsingClient:
     """Thread-safe. check() never raises for network or API problems."""
 
+    name = PROVIDER
+
     def __init__(self, config: SafeBrowsingConfig | None = None, *, api_key: str | None = None,
                  http: httpx.Client | None = None, clock: Callable[[], float] = time.monotonic,
                  now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
@@ -345,6 +347,14 @@ class SafeBrowsingClient:
     # ------------------------------------------------------------------ public
     def check(self, value: str | NormalizedURL, input_type: str = "full_url") -> IntelResult:
         """Raises InvalidURLError for input that cannot be normalized; never for the API."""
+        return self._check(value, input_type, network=True)
+
+    def check_offline(self, value: str | NormalizedURL, input_type: str = "full_url") -> IntelResult | None:
+        """Like check(), but never sends a request: the answer from the local prefix
+        cache (or for a host that is never sent), or None if Google must be asked."""
+        return self._check(value, input_type, network=False)
+
+    def _check(self, value, input_type: str, network: bool) -> IntelResult | None:
         n = value if isinstance(value, NormalizedURL) else normalize_url(value, input_type)
         if not self.enabled:
             return IntelResult(UNAVAILABLE, reason="disabled:no_api_key")
@@ -361,6 +371,8 @@ class SafeBrowsingClient:
         found, missing = self._from_cache(prefixes, hashes)
         if found:
             return self._result(canon, found)
+        if missing and not network:
+            return None
         if missing:
             try:
                 answer, ttl = self._search(missing)

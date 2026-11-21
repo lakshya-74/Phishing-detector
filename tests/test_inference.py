@@ -11,12 +11,12 @@ from src.inference import bundle as bundle_mod
 from src.inference import predict as predict_mod
 from src.inference.bundle import BundleError, build_bundle, load_bundle, model_version
 from src.inference.decision_engine import MODEL, RULE, THREAT_INTEL, decide
-from src.inference.predict import LOCAL_FEEDS, Predictor
-from src.inference.runtime import ModelRuntime
+from src.inference.predict import LOCAL_FEEDS, Predictor, is_popular
+from src.inference.runtime import ModelRuntime, ModelScores
 from src.intelligence.cache import ResultCache
 from src.intelligence.local_database import ThreatIntelConfig, ThreatIntelDB, update_database
-from src.intelligence.results import (EXACT_URL, HOSTNAME, MATCH, NO_MATCH, REGISTERED_DOMAIN,
-                                      UNAVAILABLE, IntelMatch, IntelResult)
+from src.intelligence.results import (EXACT_URL, HOSTNAME, MATCH, NO_MATCH, PENDING,
+                                      REGISTERED_DOMAIN, UNAVAILABLE, IntelMatch, IntelResult)
 from src.models.calibration import LIKELY_SAFE, PHISHING, UNCERTAIN, StackCalibrator
 from src.models.char_cnn import load_checkpoint
 from src.models.ngram_lr import fit_with_c_search
@@ -68,7 +68,9 @@ def tiny(tmp_path_factory):
     redirectors = root / "redirectors.txt"
     redirectors.write_text("bit.ly\nqr-short.link\n", encoding="utf-8")
     b = build_bundle(cnn_checkpoint=cnn, ngram_model=ng, ensemble_json=ens, candidate=CANDIDATE,
-                     out_dir=root / "models" / "full_url", redirector_lists=[redirectors])
+                     out_dir=root / "models" / "full_url", redirector_lists=[redirectors],
+                     popular_domains=["GitHub.com.", "google.com", "github.io"],
+                     popular_source={"top_n": 3, "list": "test"})
     raw = root / "raw"
     build_raw(raw, datetime.now(timezone.utc) - timedelta(hours=1))
     intel_cfg = ThreatIntelConfig(database=root / "intel.sqlite3", local_redirectors=root / "none.txt")
@@ -87,8 +89,12 @@ def make_predictor(tiny, **kw):
 def test_bundle_content_and_version(tiny):
     b = load_bundle(tiny["bundle"].path)
     assert b.mode == "full_url" and b.manifest["candidate"] == CANDIDATE
-    assert {p.name for p in b.path.iterdir()} == {"cnn.pt", "ngram.npz", "redirectors.txt", "version.json"}
+    assert {p.name for p in b.path.iterdir()} == {"cnn.pt", "ngram.npz", "redirectors.txt",
+                                                  "popular.txt", "version.json"}
     assert b.redirectors() == {"bit.ly", "qr-short.link"}
+    assert b.popular() == {"github.com", "google.com", "github.io"}
+    assert b.manifest["popular"] | {"sha256": None} == {"file": "popular.txt", "sha256": None, "count": 3,
+                                                       "top_n": 3, "list": "test"}
     hashes = {n: m["sha256"] for n, m in b.manifest["members"].items()}
     assert b.model_version == model_version("full_url", hashes, b.manifest["calibrator"])
     other = dict(b.manifest["calibrator"], bias=0.5)
@@ -106,6 +112,16 @@ def test_bundle_refuses_damage(tiny, tmp_path):
     with (dst / "cnn.pt").open("ab") as fh:
         fh.write(b"x")
     with pytest.raises(BundleError, match="hash"):
+        load_bundle(dst)
+    dst = fresh()
+    (dst / "popular.txt").write_text("evil.example\n", encoding="utf-8")
+    with pytest.raises(BundleError, match="hash"):
+        load_bundle(dst)
+    dst = fresh()
+    m = json.loads((dst / "version.json").read_text(encoding="utf-8"))
+    m["format_version"] = 1
+    (dst / "version.json").write_text(json.dumps(m), encoding="utf-8")
+    with pytest.raises(BundleError, match="rebuild"):
         load_bundle(dst)
     dst = fresh()
     (dst / "ngram.npz").unlink()
@@ -127,7 +143,8 @@ def test_build_refuses_wrong_inputs(tiny, tmp_path):
     other = tmp_path / "other.pt"
     other.write_bytes(tiny["cnn"].read_bytes() + b"x")
     for change, match in [({"cnn_checkpoint": other}, "hash differs"), ({"candidate": "broken"}, "not usable"),
-                          ({"candidate": "nope"}, "no candidate"), ({"redirector_lists": []}, "redirector")]:
+                          ({"candidate": "nope"}, "no candidate"), ({"redirector_lists": []}, "redirector"),
+                          ({"popular_domains": ["bad domain"]}, "not a domain")]:
         with pytest.raises(BundleError, match=match):
             build_bundle(**{**kw, **change})
 
@@ -197,6 +214,27 @@ def test_rules_for_redirectors_missing_models_and_siblings():
     assert (d.decision, d.source) == (PHISHING, MODEL)
 
 
+def test_popular_website_guard():
+    kw = dict(input_type="full_url", is_redirector=False, is_popular=True)
+    d = decide(model_probability=0.968, model_outcome=PHISHING, intel=_intel(), **kw)
+    assert (d.decision, d.source, d.risk_score) == (UNCERTAIN, RULE, 0.968)
+    assert "PHISHING" in d.reasons[0] and "popular website" in d.reasons[1]
+    d = decide(model_probability=0.1, model_outcome=LIKELY_SAFE, intel=_intel(), **kw)
+    assert (d.decision, d.source) == (LIKELY_SAFE, MODEL)          # untouched: not marked safe by it
+    d = decide(model_probability=0.5, model_outcome=UNCERTAIN, intel=_intel(), **kw)
+    assert (d.decision, d.source) == (UNCERTAIN, MODEL)
+    d = decide(model_probability=0.2, model_outcome=LIKELY_SAFE, intel=_intel(_match(EXACT_URL)), **kw)
+    assert (d.decision, d.source) == (PHISHING, THREAT_INTEL)       # a listing still wins
+
+
+def test_pending_checks_are_no_information():
+    intel = {"feeds": IntelResult(NO_MATCH), "google_safe_browsing": IntelResult(PENDING)}
+    for outcome in (PHISHING, LIKELY_SAFE):
+        d = decide(input_type="full_url", model_probability=0.5, model_outcome=outcome, intel=intel,
+                   is_redirector=False)
+        assert d.decision == outcome and any("background" in r for r in d.reasons)
+
+
 def test_no_match_and_unavailable_never_lower_the_risk():
     for intel in (_intel(), _intel(status=UNAVAILABLE, reason="database_missing")):
         d = decide(input_type="full_url", model_probability=0.97, model_outcome=PHISHING,
@@ -242,6 +280,66 @@ def test_predict_end_to_end(tiny):
     assert p.predict([]) == []
 
 
+def _always(p_value):
+    def score(items):
+        p = np.full(len(items), p_value)
+        return ModelScores(p, np.array([PHISHING if p_value >= 0.8 else LIKELY_SAFE] * len(items)), {})
+    return score
+
+
+def test_predict_popular_guard(tiny, monkeypatch):
+    p = make_predictor(tiny)
+    assert p.popular == {"github.com", "google.com", "github.io"}
+    monkeypatch.setattr(p.runtime, "score", _always(0.97))
+    login, pages, own_site, google_form = p.predict([
+        "https://github.com/login", "https://gist.github.com/x", "https://someone.github.io/login",
+        "https://docs.google.com/forms/d/e/ABC123/viewform"])
+    assert (login.decision, login.source, login.risk_score) == (UNCERTAIN, RULE, 0.97)
+    assert pages.decision == UNCERTAIN                           # any host of the website
+    assert (own_site.decision, own_site.source) == (PHISHING, MODEL)   # a user site, not GitHub's
+    assert (google_form.decision, google_form.source) == (PHISHING, THREAT_INTEL)  # listed on the feed
+    assert not is_popular(normalize_url("http://140.82.112.3/login"), {"140.82.112.3"})
+    monkeypatch.setattr(p.runtime, "score", _always(0.01))
+    assert p.predict_one("https://github.com/explore").decision == LIKELY_SAFE
+
+
+class FakeChecker:
+    name = "fake_online"
+
+    def __init__(self, result):
+        self.result, self.seen = result, []
+
+    def lookup(self, n):
+        self.seen.append(n.canonical)
+        return self.result
+
+    def wait_idle(self, timeout=None):
+        return True
+
+    def stats(self):
+        return {"seen": len(self.seen)}
+
+    def close(self):
+        self.closed = True
+
+
+def test_predict_with_online_checks(tiny):
+    pending = FakeChecker(IntelResult(PENDING))
+    p = make_predictor(tiny, online=[pending])
+    r = p.predict_one("https://fresh-site.com/page")
+    assert r.pending == ("fake_online",) and r.to_dict()["pending"] == ["fake_online"]
+    assert any("background" in x for x in r.reasons) and pending.seen == ["https://fresh-site.com/page"]
+    m = IntelMatch(EXACT_URL, "fake_online", 1, "t", "t", "t", (), ("phishing",), "Advisory provided by X")
+    listed = make_predictor(tiny, online=[FakeChecker(IntelResult(MATCH, (m,)))])
+    r = listed.predict_one("https://fresh-site.com/page")
+    assert (r.decision, r.source, r.pending) == (PHISHING, THREAT_INTEL, ())
+    assert r.attributions == ("Advisory provided by X",)
+    assert listed.stats()["online"] == {"fake_online": {"seen": 1}}
+    listed.close()
+    with pytest.raises(ValueError, match="unique"):
+        make_predictor(tiny, online=[pending, pending])
+
+
 def test_predict_domain_inputs_and_failures(tiny, monkeypatch):
     p = make_predictor(tiny)
     listed, unknown = p.predict(["login-verify.evil-site.xyz", "unknown-site.com"], "domain")
@@ -265,7 +363,8 @@ def test_predict_domain_inputs_and_failures(tiny, monkeypatch):
     assert any(f"{LOCAL_FEEDS} unavailable (database_missing)" in x for x in r.reasons)
 
 
-def test_cli(tiny, capsys):
+def test_cli(tiny, capsys, monkeypatch):
+    monkeypatch.delenv("SAFE_BROWSING_API_KEY", raising=False)      # never call Google from tests
     cfg = tiny["root"] / "intel.json"
     cfg.write_text(json.dumps({"database": str(tiny["intel_cfg"].database),
                                "local_redirectors": str(tiny["root"] / "none.txt")}), encoding="utf-8")
@@ -273,6 +372,7 @@ def test_cli(tiny, capsys):
     assert predict_mod.main([LISTED, "https://bit.ly/x", "not a url", *base]) == 0
     out = capsys.readouterr().out
     assert "PHISHING" in out and "UNCERTAIN" in out and "ERROR" in out
-    assert predict_mod.main(["unknown-site.com", "--domain", "--json", *base]) == 0
+    assert "note: google_safe_browsing not used (no API key in SAFE_BROWSING_API_KEY)" in out
+    assert predict_mod.main(["unknown-site.com", "--domain", "--json", "--no-online", *base]) == 0
     assert json.loads(capsys.readouterr().out)["decision"] == UNCERTAIN
     assert bundle_mod.main(["verify", str(tiny["bundle"].path)]) == 0

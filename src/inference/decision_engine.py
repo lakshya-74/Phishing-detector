@@ -7,20 +7,27 @@ Rules, in order. Threat intelligence can only raise the risk, never lower it.
      destination is hidden, and the model was not trained on such links.
   3. No model result (domain-only input, for which there is no hostname model
      yet, or a model failure) -> UNCERTAIN, source "rule".
-  4. Otherwise the calibrated model decision, source "model".
+  4. Otherwise the calibrated model decision, source "model". Popular-website
+     guard: on the most popular websites (bundle popular.txt, Tranco top
+     1,000) the model alone may not say PHISHING; it says UNCERTAIN, source
+     "rule". Real login pages there look like phishing to a URL-only model
+     (github.com/login: 0.968). Phishing pages listed by a feed or Google are
+     still PHISHING by rule 1. The guard never gives LIKELY_SAFE, so no
+     website is ever marked safe because it is popular.
   5. Listed as malware / unwanted software / harmful app -> at least
      UNCERTAIN. Dangerous, but not phishing, so it is not labelled phishing.
   6. Another host under the same registered domain is listed -> LIKELY_SAFE
      becomes UNCERTAIN.
-"no_match" and "unavailable" from a threat-intel source never lower the risk;
-they are reported in `reasons` ("not listed" is not evidence of safety).
+"no_match", "unavailable" and "pending" from a threat-intel source never
+lower the risk; they are reported in `reasons` ("not listed" is not evidence
+of safety).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Mapping
 
-from src.intelligence.results import (EXACT_URL, HOSTNAME, MATCH, PHISHING_THREAT,
+from src.intelligence.results import (EXACT_URL, HOSTNAME, MATCH, PENDING, PHISHING_THREAT,
                                       REGISTERED_DOMAIN, UNAVAILABLE, IntelMatch, IntelResult)
 from src.models.calibration import LIKELY_SAFE, OUTCOMES, PHISHING, UNCERTAIN
 
@@ -44,7 +51,7 @@ def _describe(ms: list[IntelMatch]) -> str:
 
 
 def decide(*, input_type: str, model_probability: float | None, model_outcome: str | None,
-           intel: Mapping[str, IntelResult], is_redirector: bool,
+           intel: Mapping[str, IntelResult], is_redirector: bool, is_popular: bool = False,
            model_note: str = "") -> Decision:
     if model_outcome is not None and model_outcome not in OUTCOMES:
         raise ValueError(f"model_outcome must be one of {OUTCOMES}")
@@ -69,6 +76,11 @@ def decide(*, input_type: str, model_probability: float | None, model_outcome: s
     else:
         decision, source = model_outcome, MODEL
         reasons.append(f"model: {model_outcome} (P(phishing) = {model_probability:.3f})")
+        if is_popular and decision == PHISHING:
+            decision, source = UNCERTAIN, RULE
+            reasons.append("popular website: the model alone does not call pages here phishing "
+                           "(real login pages look like phishing from the URL); only a threat-list "
+                           "match does")
 
     if other:
         kinds = sorted({t for m in other for t in m.threat_types})
@@ -82,6 +94,8 @@ def decide(*, input_type: str, model_probability: float | None, model_outcome: s
     for name, r in intel.items():
         if r.status == UNAVAILABLE:
             reasons.append(f"{name} unavailable ({r.reason})")
+        elif r.status == PENDING:
+            reasons.append(f"{name} check is running in the background (ask again for its answer)")
         elif r.stale:
             reasons.append(f"{name} data is stale (feeds updated {r.feeds_updated_at})")
     if not matches:

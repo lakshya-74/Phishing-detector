@@ -24,7 +24,8 @@ Phishing-detection module of the Bharat AI on-device security assistant.
 | Threat intelligence: online lookups, Google Safe Browsing v5 (`src/intelligence/safe_browsing.py`) | done, tested offline; off by default; not yet tried against the real API |
 | URLhaus feed | skipped (decided 2026-11-20): malware, not phishing; terms restrict AI products |
 | Inference engine, step 1: model bundle, runtime, decision engine, single/batch predict (`src/inference/`) | done, tested; run on the real model |
-| Inference engine, step 2: queues, concurrency, background Google lookups, benchmarks | next |
+| Popular-website guard, Tranco top 1,000 (decision rule 4) | done, tested; chosen 2026-11-21 |
+| Inference engine, step 2: queue + micro-batches (`service.py`), background Google checks (`background.py`), benchmarks (`benchmark.py`) | done, tested; laptop benchmark done, Pi pending (Phase 5) |
 | API, ARM deployment | not started |
 
 ## Requirements
@@ -569,10 +570,16 @@ python -m src.inference.bundle verify
 python -m src.inference.predict "https://example.com/login" "https://bit.ly/abc"
 python -m src.inference.predict example.com --domain
 python -m src.inference.predict URL --json
+python -m src.inference.benchmark             # speed + memory report -> reports/
 ```
 
-- **Model bundle** (`models/full_url/`): `cnn.pt`, `ngram.npz`,
-  `redirectors.txt` and `version.json`.
+- **Model bundle** (`models/full_url/`, format 2): `cnn.pt`, `ngram.npz`,
+  `redirectors.txt`, `popular.txt` and `version.json`.
+  - `popular.txt` is the newest Tranco top 1,000, used by the popular-website
+    guard below. `--popular-top-n N` changes N, and 0 turns the guard off.
+    The Pi needs no Tranco download.
+  - A format-1 bundle is refused with "rebuild it". Run
+    `python -m src.inference.bundle build` again.
   - `version.json` holds the calibrator, thresholds, validation numbers, data
     and library versions, and the SHA-256 of every file. It is the one
     manifest that replaces the spec's separate `model_config.json`,
@@ -589,34 +596,46 @@ python -m src.inference.predict URL --json
   1. The exact page or host is listed as phishing: PHISHING.
   2. A link shortener or QR redirector: UNCERTAIN.
   3. No model result (domain-only input, model failure): UNCERTAIN.
-  4. Otherwise the calibrated model.
+  4. Otherwise the calibrated model. **Popular-website guard (chosen
+     2026-11-21, top 1,000):** on a website in `popular.txt`, the model alone
+     may not say PHISHING; it says UNCERTAIN. A threat-list match still gives
+     PHISHING (rule 1). The guard never gives LIKELY_SAFE, so no website is
+     marked safe for being popular.
+     - The guard looks at the URL's own website. So `someone.github.io` and
+       `x.blogspot.com` are not covered, and `gist.github.com` is.
+     - It is a decision rule, not part of the model, so the model version
+       and the cached model scores stay valid.
   5. A malware listing: at least UNCERTAIN, but never labelled phishing.
   6. A listed sibling host: LIKELY_SAFE becomes UNCERTAIN.
+
+  "pending", "no_match" and "unavailable" never lower the risk.
 - **Predictor** ([src/inference/predict.py](src/inference/predict.py)):
   - normalizes the input, de-duplicates it and checks the cache (exact URL +
     model version);
   - scores the misses in batches and looks them up in the local threat
-    database;
+    database and, if a key is set, in Google, in the background (see step 2);
   - gives invalid input its own error result and keeps the input order.
 - **No domain-only model yet:** hostnames are checked against threat
   intelligence only and otherwise answered UNCERTAIN, as the spec requires.
 
-First real run (laptop CPU, 2026-11-20):
+Real runs on the laptop CPU (2026-11-20, without the guard; 2026-11-21, with it):
 
-| Input | Decision | Why |
+| Input | Without guard | With guard (top 1,000) |
 |---|---|---|
-| `https://en.wikipedia.org/wiki/Phishing` | LIKELY_SAFE (0.003) | model |
-| `http://paypal-account-verify.secure-login-update.xyz/signin/webscr?cmd=_login` (made up) | PHISHING (0.998) | model |
-| a page from the PhishTank feed / another page on that host | PHISHING | threat intel (exact / hostname) |
-| `https://bit.ly/3abcXYZ` | UNCERTAIN | rule: destination hidden |
-| `https://www.google.com/` | UNCERTAIN (0.345) | model |
-| **`https://github.com/login`** | **PHISHING (0.968)** | **model: a false alarm** |
+| `https://en.wikipedia.org/wiki/Phishing` | LIKELY_SAFE (0.003) | LIKELY_SAFE (0.003) |
+| `http://paypal-account-verify.secure-login-update.xyz/signin/webscr?cmd=_login` (made up) | PHISHING (0.998) | PHISHING (0.998) |
+| `https://someone.github.io/paypal/login` (made up) | - | PHISHING (0.997): a user site, not covered |
+| a page from the PhishTank feed / another page on that host | PHISHING (threat intel) | PHISHING (threat intel) |
+| `https://bit.ly/3abcXYZ` | UNCERTAIN (rule: destination hidden) | UNCERTAIN |
+| `https://www.google.com/` | UNCERTAIN (0.345) | UNCERTAIN (0.345) |
+| **`https://github.com/login`** | **PHISHING (0.968): false alarm** | UNCERTAIN (rule) |
+| **`https://accounts.google.com/signin`** | **PHISHING (0.910): false alarm** | UNCERTAIN (rule) |
+| **`https://www.paypal.com/signin`** | **PHISHING (0.797): false alarm** | UNCERTAIN (rule) |
 
-The last row is the "real login page" blind spot found in Phase 2. A
-possible guard: on very popular websites, the model alone may say at most
-UNCERTAIN, and only a threat-intel listing gives PHISHING. It never says
-LIKELY_SAFE, so no domain is marked safe. Measured on validation, in-sample,
-2,402 safe and 1,525 phishing websites:
+The bold rows are the "real login page" blind spot found in Phase 2. Real
+sign-in pages of big websites look like phishing from the URL alone. The
+guard was measured on validation (in-sample) before choosing it, with 2,402
+safe and 1,525 phishing websites:
 
 | Guard on Tranco top | Safe websites flagged PHISHING | Phishing websites called PHISHING |
 |---|---|---|
@@ -627,8 +646,97 @@ LIKELY_SAFE, so no domain is marked safe. Measured on validation, in-sample,
 
 Validation has few top-1,000 websites (7 safe), while real browsing is mostly
 on them. The guard's real benefit is therefore larger than this table shows,
-and so is its cost on phishing hosted on big platforms. Known phishing pages
-on those platforms are still caught by the exact-URL threat lists.
+and so is its cost on phishing hosted on big platforms (a fake Google Form,
+for example). Known phishing pages on those platforms are still caught by
+the exact-URL threat lists. The lasting fix is in the data: real sign-in
+pages as safe examples in the next dataset rebuild.
+
+### Inference step 2: concurrent requests, background Google checks, benchmarks
+
+```powershell
+python -m src.inference.benchmark --save-urls data/processed/benchmark_urls.txt   # laptop
+python -m src.inference.benchmark --urls benchmark_urls.txt --threads 4           # Pi (Phase 5)
+python -m src.inference.benchmark --quick                                          # short smoke run
+```
+
+- **Service** ([src/inference/service.py](src/inference/service.py),
+  settings in `config/inference.json`). This is what the API (Phase 6) will
+  call.
+  - One worker thread owns the model. Callers put requests on a queue, and
+    the worker scores everything waiting (up to `max_batch_urls`, 64) as one
+    batch. Each caller then gets its own slice of the results.
+  - A URL sent by several callers is scored once.
+  - `submit()` gives back a Future, `predict()` blocks, and
+    `predict_async()` is for asyncio.
+  - **Protection:**
+    - A full queue (`max_queue_urls`, 2048) refuses new requests at once
+      with `Overloaded`. The API will turn this into 503 + Retry-After.
+    - One request holds at most `max_urls_per_request` URLs (256).
+    - A request that waited longer than `queue_timeout_seconds` (10 s) gets
+      `QueueTimeout` and is not scored.
+    - Cancelled requests are skipped.
+    - A failing batch fails only its own requests.
+    - `close()` finishes the queued requests first.
+  - `stats()` reports the queue depth, counters, latency P50/P95/P99, batch
+    sizes, the cache and Google. It feeds `/metrics` later.
+- **Background Google checks**
+  ([src/intelligence/background.py](src/intelligence/background.py)). No
+  answer waits for the network.
+  - A URL that Google's prefix cache can answer gets that answer at once.
+  - Otherwise the check runs in the background (2 workers, at most 1,000
+    queued, one at a time per URL), and the answer says
+    `pending: ["google_safe_browsing"]`. Asking again gives Google's answer.
+  - A failed check is remembered for 60 s (`failure_seconds`), so a failing
+    API is not hammered.
+  - The in-flight list holds SHA-256 keys, not URLs.
+  - Without `SAFE_BROWSING_API_KEY` Google is skipped, and this is noted.
+  - The one-shot `predict` command waits up to 3 s for pending checks
+    (`--wait-online`); the service never waits.
+- **Queue wait measured, then set to 0.** First design: the worker waited
+  2 ms for more requests to join a batch. On this Windows laptop, that
+  "2 ms" wait really took 16 ms (timer resolution), and it made everything
+  slower. With 1 caller: P50 17.8 ms with the wait, 4.5 ms without, so 41
+  instead of 211 requests/s. Under load, batches form without waiting,
+  because requests pile up while a batch runs. So `max_wait_ms` is now 0;
+  it can be tuned on the Pi, where Linux timers are precise.
+
+Laptop benchmark (2026-11-21; `reports/benchmark_AMD64_20261120T190545Z.json`,
+UTC in the name):
+- Machine: Windows, x86-64, 12 logical CPUs, PyTorch 2.15 CPU (8 threads).
+- Workload: 2,048 validation URLs.
+- Bundle: 11 MB, loaded in 0.21 s.
+- Memory: 357 MB resident after loading, 510 MB peak. Python + PyTorch alone
+  use 307 MB.
+
+| Model alone, batch | P50 ms | P95 ms | P99 ms | ms per URL | URLs/s |
+|---|---|---|---|---|---|
+| 1 | 3.6 | 5.8 | 8.9 | 3.86 | 258 |
+| 16 | 17.8 | 23.3 | 26.5 | 1.12 | 891 |
+| 32 | 32.3 | 38.3 | 40.1 | 1.01 | 986 |
+| 64 | 71.4 | 81.7 | 86.6 | 1.08 | 929 |
+| 128 | 119.2 | 176.1 | 186.4 | 0.97 | 1,028 |
+
+| Service, 1 URL per request, no cache | P50 ms | P95 ms | P99 ms | requests/s | mean batch |
+|---|---|---|---|---|---|
+| 1 caller | 5.3 | 7.9 | 11.1 | 180 | 1.0 |
+| 4 callers | 16.3 | 22.2 | 26.0 | 239 | 2.0 |
+| 16 callers | 43.5 | 67.6 | 95.1 | 342 | 7.9 |
+| 64 callers | 101.7 | 126.2 | 135.5 | 588 | 28.6 |
+
+Full path (normalize, cache, model, threat database, rules), calls of 64:
+- cold cache: 765 URLs/s;
+- warm cache (same URLs again): 2,645 URLs/s, cache hit rate 100%.
+
+Caveats:
+- Laptop timings vary by about ±30% between runs (power management,
+  background apps). For example, 16 callers gave 538 requests/s in an
+  earlier run. These numbers are a preview; Phase 5 measures the Pi 5.
+- PyTorch keeps about 7.5 cores busy even for one URL. In one run, 4
+  threads were as fast as 8 at batch size 1. Choose `--threads` on the Pi.
+- Batching scores 3–4 times more URLs per second than one at a time.
+- Scores can differ in the 8th decimal depending on which URLs share a
+  batch (padding width changes the summation order). Decisions do not
+  change; the test checks scores to 1e-6.
 
 ## Training on a GPU PC (Windows)
 

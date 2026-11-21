@@ -7,6 +7,8 @@ status
                  every minute. The decision engine must treat it as "no info".
   "unavailable"  the lookup could not run (database missing, damaged, ...).
                  Also "no info", and worth reporting as a health problem.
+  "pending"      an online check was started in the background and has not
+                 answered yet; asking again later gives its answer. "No info".
 
 Match levels, strongest first
   "exact_url"          this exact page is listed (scheme and #fragment ignored)
@@ -20,7 +22,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-MATCH, NO_MATCH, UNAVAILABLE = "match", "no_match", "unavailable"
+MATCH, NO_MATCH, UNAVAILABLE, PENDING = "match", "no_match", "unavailable", "pending"
 EXACT_URL, HOSTNAME, REGISTERED_DOMAIN = "exact_url", "hostname", "registered_domain"
 LEVELS = (EXACT_URL, HOSTNAME, REGISTERED_DOMAIN)
 

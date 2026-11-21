@@ -1,12 +1,15 @@
 """A model bundle: one folder with everything inference needs, checked by hash.
 
     python -m src.inference.bundle build        # from artifacts/runs -> models/full_url
+    python -m src.inference.bundle build --popular-top-n 10000
     python -m src.inference.bundle verify models/full_url
 
 Contents of models/<mode>/
   cnn.pt           the char-CNN / hybrid checkpoint (weights, tokenizer, feature scaler)
   ngram.npz        the character n-gram model (plain arrays, no pickle)
   redirectors.txt  URL-shortener / QR-redirector domains (their links hide the destination)
+  popular.txt      the most popular websites (Tranco top-N, default 1,000): the model
+                   alone may not call a page there PHISHING (decision_engine rule 4)
   version.json     model version, calibrator + thresholds, SHA-256 of every file,
                    validation numbers, data hashes and library versions
 
@@ -25,14 +28,16 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.data.parsers import find_snapshots
+from src.data.parsers import find_snapshots, parse_tranco
 from src.data.split_dataset import load_redirectors
 from src.models.calibration import StackCalibrator
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2                                   # 2: popular.txt added
 MODELS_DIR = Path("models")
 FILES = {"char_cnn": "cnn.pt", "char_ngram_lr": "ngram.npz"}
 REDIRECTORS_FILE = "redirectors.txt"
+POPULAR_FILE = "popular.txt"
+DEFAULT_POPULAR_TOP_N = 1000
 
 
 class BundleError(ValueError):
@@ -78,10 +83,30 @@ class Bundle:
     def redirectors(self) -> set[str]:
         return load_redirectors([self.path / REDIRECTORS_FILE])
 
+    def popular(self) -> set[str]:
+        """Websites (registered domains) where the model alone may not say PHISHING."""
+        text = (self.path / self.manifest["popular"]["file"]).read_text(encoding="utf-8")
+        return {line.strip() for line in text.splitlines() if line.strip()}
+
+
+def _clean_domains(domains) -> list[str]:
+    out = set()
+    for d in domains:
+        d = str(d).strip().lower().rstrip(".")
+        if not d or any(c.isspace() for c in d) or "/" in d:
+            raise BundleError(f"not a domain name: {d!r}")
+        out.add(d)
+    return sorted(out)
+
 
 def build_bundle(*, cnn_checkpoint: Path, ngram_model: Path, ensemble_json: Path, candidate: str,
-                 out_dir: Path, redirector_lists: list[Path], now: datetime | None = None) -> Bundle:
-    """Copy the chosen candidate's members into out_dir and write version.json."""
+                 out_dir: Path, redirector_lists: list[Path], popular_domains=(),
+                 popular_source: dict | None = None, now: datetime | None = None) -> Bundle:
+    """Copy the chosen candidate's members into out_dir and write version.json.
+
+    popular_domains: registered domains where the model alone may not say PHISHING
+    (empty: no guard). popular_source records where they came from (list, top_n).
+    """
     report = json.loads(Path(ensemble_json).read_text(encoding="utf-8"))
     cand = report.get("candidates", {}).get(candidate)
     if cand is None:
@@ -105,6 +130,7 @@ def build_bundle(*, cnn_checkpoint: Path, ngram_model: Path, ensemble_json: Path
     redirectors = load_redirectors(redirector_lists)
     if not redirectors:
         raise BundleError("no redirector domains loaded: links that hide their target would be scored")
+    popular = _clean_domains(popular_domains)
 
     out_dir = Path(out_dir)
     tmp = out_dir.with_name(out_dir.name + ".part")
@@ -113,6 +139,7 @@ def build_bundle(*, cnn_checkpoint: Path, ngram_model: Path, ensemble_json: Path
     for name, m in members.items():
         shutil.copyfile(m["source"], tmp / m["file"])
     (tmp / REDIRECTORS_FILE).write_text("\n".join(sorted(redirectors)) + "\n", encoding="utf-8")
+    (tmp / POPULAR_FILE).write_text("".join(d + "\n" for d in popular), encoding="utf-8")
 
     import numpy, sklearn, torch                             # versions for the record only
     hashes = {name: m["sha256"] for name, m in members.items()}
@@ -131,6 +158,8 @@ def build_bundle(*, cnn_checkpoint: Path, ngram_model: Path, ensemble_json: Path
         "fitted_on": report.get("fitted_on"),
         "redirectors": {"file": REDIRECTORS_FILE, "sha256": _sha256(tmp / REDIRECTORS_FILE),
                         "count": len(redirectors)},
+        "popular": {"file": POPULAR_FILE, "sha256": _sha256(tmp / POPULAR_FILE),
+                    "count": len(popular), "top_n": 0, **(popular_source or {})},
         "built_from": {"ensemble": Path(ensemble_json).as_posix(),
                        **{n: m["source"] for n, m in members.items()}},
         "versions": {"python": platform.python_version(), "torch": str(torch.__version__),
@@ -153,12 +182,14 @@ def load_bundle(path: Path | str) -> Bundle:
     except json.JSONDecodeError as exc:
         raise BundleError(f"{manifest_path} is not valid JSON") from exc
     if manifest.get("format_version") != FORMAT_VERSION:
-        raise BundleError("unsupported bundle format")
+        raise BundleError(f"bundle format {manifest.get('format_version')} is not {FORMAT_VERSION}: "
+                          "rebuild it with `python -m src.inference.bundle build`")
     calibrator = StackCalibrator.from_config(manifest["calibrator"])
     if set(calibrator.members) != set(manifest["members"]):
         raise BundleError("calibrator members do not match the bundled members")
     checks = [(m["file"], m["sha256"]) for m in manifest["members"].values()]
-    checks.append((manifest["redirectors"]["file"], manifest["redirectors"]["sha256"]))
+    for extra in ("redirectors", "popular"):
+        checks.append((manifest[extra]["file"], manifest[extra]["sha256"]))
     for name, digest in checks:
         f = path / name
         if not f.is_file():
@@ -183,6 +214,8 @@ def main(argv=None) -> int:
     b.add_argument("--out", type=Path, default=None, help="default: models/<mode>")
     b.add_argument("--raw", type=Path, default=Path("data/raw"))
     b.add_argument("--local-redirectors", type=Path, default=Path("config/redirectors_local.txt"))
+    b.add_argument("--popular-top-n", type=int, default=DEFAULT_POPULAR_TOP_N,
+                   help="popular-website guard: newest Tranco top-N (0 = no guard)")
     v = sub.add_parser("verify", help="check a bundle's files against version.json")
     v.add_argument("path", type=Path, nargs="?", default=MODELS_DIR / "full_url")
     args = ap.parse_args(argv)
@@ -196,13 +229,25 @@ def main(argv=None) -> int:
     lists = list(find_snapshots(args.raw, "url_shorteners")[-1:])
     if args.local_redirectors.is_file():
         lists.append(args.local_redirectors)
+    if args.popular_top_n < 0:
+        ap.error("--popular-top-n must be >= 0")
+    popular, source = set(), {"top_n": 0}
+    if args.popular_top_n > 0:
+        snaps = find_snapshots(args.raw, "tranco")
+        if not snaps:
+            ap.error("no Tranco snapshot for the popular-website guard: run "
+                     "'python -m src.data.download_datasets --sources tranco' or pass --popular-top-n 0")
+        popular = {rec.value for rec in parse_tranco(snaps[-1]) if int(rec.source_id) <= args.popular_top_n}
+        source = {"top_n": args.popular_top_n, "list": snaps[-1].name}
     bundle = build_bundle(cnn_checkpoint=run / "best.pt", ngram_model=args.ngram,
                           ensemble_json=ensemble,
                           candidate=args.candidate or f"{run.name}+char_ngram_lr",
-                          out_dir=args.out or MODELS_DIR / mode, redirector_lists=lists)
+                          out_dir=args.out or MODELS_DIR / mode, redirector_lists=lists,
+                          popular_domains=popular, popular_source=source)
     m = bundle.manifest
     print(f"built {bundle.path}: model_version {m['model_version']} ({m['candidate']}), "
-          f"{m['redirectors']['count']} redirector domains")
+          f"{m['redirectors']['count']} redirector domains, popular-website guard on "
+          f"{m['popular']['count']} websites (Tranco top {m['popular']['top_n']})")
     return 0
 
 

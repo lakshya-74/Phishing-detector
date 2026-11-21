@@ -241,6 +241,19 @@ def test_answers_are_cached_by_prefix():
     assert len(fake.requests) == 3
 
 
+def test_check_offline_never_sends():
+    fake = FakeGoogle({"a.b.com/1/2.html": PHISH}, cache="300s")
+    client, clock = make(fake)
+    assert client.check_offline(URL) is None and not fake.requests          # Google would be asked
+    assert client.check_offline("http://10.1.2.3/").reason == "not_sent:private_or_local_host"
+    assert client.check(URL).status == MATCH and len(fake.requests) == 1
+    assert client.check_offline(URL).status == MATCH                        # now from the cache
+    client.check("http://unlisted-site.com/")
+    assert client.check_offline("http://unlisted-site.com/").status == NO_MATCH
+    clock.t += 301                                                          # cacheDuration over
+    assert client.check_offline("http://unlisted-site.com/") is None and len(fake.requests) == 2
+
+
 def test_positive_answers_live_at_most_30_minutes():
     fake = FakeGoogle({"a.b.com/1/2.html": PHISH}, cache="7200s")
     client, clock = make(fake)
