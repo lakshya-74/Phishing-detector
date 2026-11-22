@@ -1,4 +1,3 @@
-import base64
 import json
 import threading
 from datetime import datetime, timezone
@@ -105,6 +104,52 @@ def test_at_most_30_expressions_and_path_prefix_rules():
         canonicalize("http:///nohost")
 
 
+# ---------------------------------------------------------------- protobuf, test side
+# Field numbers: googleapis google/security/safebrowsing/v5/safebrowsing.proto
+THREAT_NUMBERS = {"THREAT_TYPE_UNSPECIFIED": 0, "MALWARE": 1, "SOCIAL_ENGINEERING": 2,
+                  "UNWANTED_SOFTWARE": 3, "POTENTIALLY_HARMFUL_APPLICATION": 4}
+ATTRIBUTE_NUMBERS = {"CANARY": 1, "FRAME_ONLY": 2}
+UNKNOWN_ENUM = 77                       # a value Google might add later; unknown to the client
+PB = {"content-type": "application/x-protobuf"}
+
+# Google's real answer (live API, 2026-11-22; only hash prefixes were sent) for its own
+# test page http://testsafebrowsing.appspot.com/s/phishing.html
+GOOGLE_TEST_PAGE_ANSWER = bytes.fromhex(
+    "0a260a20" "efbd4c3ab44f327eb13ca942ad7c7f0ab47ec260a4d0b8051684a01b2ef35220"
+    "12020802" "120308ac02")
+
+
+def pb_varint(n: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte, n = n & 0x7F, n >> 7
+        out.append(byte | (0x80 if n else 0))
+        if not n:
+            return bytes(out)
+
+
+def pb(number: int, value) -> bytes:
+    """One field: an int becomes a varint field, bytes a length-delimited one."""
+    if isinstance(value, int):
+        return pb_varint(number << 3) + pb_varint(value)
+    return pb_varint(number << 3 | 2) + pb_varint(len(value)) + value
+
+
+def pb_detail(d: dict, packed: bool = True) -> bytes:
+    body = pb(1, THREAT_NUMBERS.get(d["threatType"], UNKNOWN_ENUM))
+    attrs = [ATTRIBUTE_NUMBERS.get(a, UNKNOWN_ENUM) for a in d.get("attributes", [])]
+    if attrs and packed:
+        return body + pb(2, b"".join(pb_varint(a) for a in attrs))
+    return body + b"".join(pb(2, a) for a in attrs)
+
+
+def pb_answer(listed: dict, seconds: int = 300, packed: bool = True) -> bytes:
+    """SearchHashesResponse from {full hash: [detail dicts]} and a cache duration."""
+    body = b"".join(pb(1, pb(1, h) + b"".join(pb(2, pb_detail(d, packed)) for d in details))
+                    for h, details in listed.items())
+    return body + pb(2, pb(1, seconds))
+
+
 # ---------------------------------------------------------------- a fake Google server
 class FakeGoogle:
     def __init__(self, listed=None, cache="300s"):
@@ -120,10 +165,12 @@ class FakeGoogle:
             if isinstance(item, Exception):
                 raise item
             return item
+        if "$alt" in request.url.params:                # like the real API (seen 2026-11-22)
+            return httpx.Response(400, json={"error": {"code": 400, "status": "INVALID_ARGUMENT",
+                                                       "message": "Unsupported Output Format"}})
         prefixes = {_b64decode(v) for v in request.url.params.get_list("hashPrefixes")}
-        full = [{"fullHash": base64.b64encode(full_hash(e)).decode(), "fullHashDetails": d}
-                for e, d in self.listed.items() if full_hash(e)[:4] in prefixes]
-        return httpx.Response(200, json={"fullHashes": full, "cacheDuration": self.cache})
+        full = {full_hash(e): d for e, d in self.listed.items() if full_hash(e)[:4] in prefixes}
+        return httpx.Response(200, content=pb_answer(full, int(self.cache.rstrip("s"))), headers=PB)
 
 
 class Clock:
@@ -157,6 +204,7 @@ def test_only_4_byte_prefixes_are_sent_with_the_key_in_a_header():
     text = str(req.url)
     assert "a.b.com" not in text and "param" not in text and "TESTKEY" not in text
     assert req.headers["x-goog-api-key"] == "TESTKEY" and req.url.host == "safebrowsing.googleapis.com"
+    assert "$alt" not in req.url.params           # v5 refuses JSON: 400 "Unsupported Output Format"
 
 
 def test_key_can_go_in_the_query_instead():
@@ -228,7 +276,41 @@ def test_unknown_or_non_enforceable_details_are_ignored(details):
     assert client.check(URL).status == NO_MATCH
 
 
+def test_googles_real_answer_for_its_test_page():
+    hashes, ttl = safe_browsing._decode_search_response(GOOGLE_TEST_PAGE_ANSWER)
+    assert hashes == [(full_hash("testsafebrowsing.appspot.com/s/phishing.html"), [("SOCIAL_ENGINEERING", [])])]
+    assert ttl == 300
+    fake = FakeGoogle()
+    fake.queue.append(httpx.Response(200, headers=PB, content=GOOGLE_TEST_PAGE_ANSWER))
+    client, _ = make(fake)
+    r = client.check("http://testsafebrowsing.appspot.com/s/phishing.html")
+    assert r.status == MATCH and r.strongest_level == EXACT_URL and r.matches[0].threat_types == ("phishing",)
+
+
+def test_decoder_reads_both_enum_encodings_and_skips_unknown_fields():
+    h = full_hash("a.b.com/1/2.html")
+    detail = pb(1, 2) + pb(2, 1) + pb(9, 5)                 # unpacked CANARY, unknown field 9
+    fixed = pb_varint(10 << 3 | 1) + b"\x00" * 8 + pb_varint(11 << 3 | 5) + b"\x00" * 4
+    body = pb(1, pb(1, h) + pb(2, detail) + pb(2, pb(1, 1))) + fixed + pb(2, pb(1, 60) + pb(2, 500_000_000))
+    hashes, ttl = safe_browsing._decode_search_response(body)
+    assert hashes == [(h, [("SOCIAL_ENGINEERING", ["CANARY"]), ("MALWARE", [])])] and ttl == 60.5
+    listed = {h: [{"threatType": "MALWARE", "attributes": ["CANARY", "FRAME_ONLY"]}]}
+    assert pb_answer(listed, packed=True) != pb_answer(listed, packed=False)
+    for packed in (True, False):
+        got, _ = safe_browsing._decode_search_response(pb_answer(listed, packed=packed))
+        assert got == [(h, [("MALWARE", ["CANARY", "FRAME_ONLY"])])]
+
+
 # ---------------------------------------------------------------- caching
+def test_cache_duration_is_capped_at_24_hours():
+    fake = FakeGoogle(cache="9999999s")
+    client, clock = make(fake)
+    client.check("http://unlisted-site.com/")
+    clock.t += 24 * 3600 + 1
+    client.check("http://unlisted-site.com/")
+    assert len(fake.requests) == 2
+
+
 def test_answers_are_cached_by_prefix():
     fake = FakeGoogle({"a.b.com/1/2.html": PHISH}, cache="300s")
     client, clock = make(fake)
@@ -299,9 +381,25 @@ def test_server_error_then_success():
 
 @pytest.mark.parametrize("response,reason", [
     (httpx.Response(403, json={"error": "bad key"}), "http_403"),
-    (httpx.Response(200, text="not json"), "bad_response"),
-    (httpx.Response(200, json={"fullHashes": [{"fullHash": "AAAA"}], "cacheDuration": "1s"}), "bad_response"),
-    (httpx.Response(200, json={"fullHashes": [], "cacheDuration": "soon"}), "bad_response"),
+    # Google's refusal of a wrong key: a protobuf google.rpc.Status with an ErrorInfo
+    # (seen live 2026-11-22), or the same as JSON
+    (httpx.Response(400, headers=PB, content=pb(1, 3) + pb(2, b"API key not valid.") + pb(3, pb(
+        1, b"type.googleapis.com/google.rpc.ErrorInfo") + pb(2, pb(1, b"API_KEY_INVALID") + pb(2, b"googleapis.com")))),
+     "http_400:API_KEY_INVALID"),
+    (httpx.Response(400, json={"error": {"code": 400, "status": "INVALID_ARGUMENT", "details": [
+        {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "API_KEY_INVALID"}]}}),
+     "http_400:API_KEY_INVALID"),
+    (httpx.Response(403, headers=PB, content=pb(1, 7) + pb(2, b"denied")), "http_403:PERMISSION_DENIED"),
+    (httpx.Response(403, json={"error": {"status": "PERMISSION_DENIED"}}), "http_403:PERMISSION_DENIED"),
+    (httpx.Response(403, json={"error": {"status": "key=TESTKEY <b>"}}), "http_403"),   # free text: dropped
+    (httpx.Response(400, headers=PB, content=b"\xff\xff"), "http_400"),                   # unreadable
+    # broken answers to a request that succeeded
+    (httpx.Response(200, json={"fullHashes": [], "cacheDuration": "300s"}), "bad_response"),   # not protobuf
+    (httpx.Response(200, text="<html>Wi-Fi login</html>"), "bad_response"),
+    (httpx.Response(200, headers=PB, content=pb(1, pb(1, b"\x00" * 4)) + pb(2, pb(1, 1))), "bad_response"),
+    (httpx.Response(200, headers=PB, content=pb(2, pb(1, 2**64 - 1))), "bad_response"),       # negative
+    (httpx.Response(200, headers=PB, content=GOOGLE_TEST_PAGE_ANSWER[:20]), "bad_response"),  # truncated
+    (httpx.Response(200, headers=PB, content=b"\x0b\x0c"), "bad_response"),                  # group wire type
 ])
 def test_client_errors_and_bad_answers_are_not_retried(response, reason):
     fake = FakeGoogle()

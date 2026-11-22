@@ -1,0 +1,61 @@
+{
+  "kind": "parity_check",
+  "created_at": "20261121T231845Z",
+  "model_version": "full_url-edb8f2cc8642",
+  "machine": {
+    "system": "Linux",
+    "release": "6.17.0-PRoot-Distro",
+    "machine": "aarch64",
+    "processor": "",
+    "cpu_count": 8,
+    "python": "3.13.5",
+    "torch": "2.15.0+cpu",
+    "torch_threads": 8,
+    "numpy": "2.4.6",
+    "sklearn": "1.9.1",
+    "cores": {
+      "Cortex-A55 @ 1803 MHz": 4,
+      "Cortex-A76 @ 2253 MHz": 2,
+      "Cortex-X1 @ 2802 MHz": 2
+    },
+    "board": null,
+    "android_kernel": false
+  },
+  "reference_machine": {
+    "system": "Windows",
+    "release": "10",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 154 Stepping 3, GenuineIntel",
+    "cpu_count": 12,
+    "python": "3.11.16",
+    "torch": "2.15.0+cpu",
+    "torch_threads": 8,
+    "numpy": "2.4.6",
+    "sklearn": "1.9.1"
+  },
+  "passed": true,
+  "problems": [],
+  "count": 2048,
+  "tolerance": 0.0001,
+  "probability": {
+    "max_abs_diff": 4.137987965058265e-07,
+    "mean_abs_diff": 8.367869047035087e-09,
+    "identical": 472
+  },
+  "member_logits": {
+    "full_url_hybrid": {
+      "max_abs_diff": 5.245208740234375e-06,
+      "mean_abs_diff": 9.128052624873817e-07
+    },
+    "char_ngram_lr": {
+      "max_abs_diff": 5.310497996902086e-08,
+      "mean_abs_diff": 5.170712004181829e-10
+    }
+  },
+  "decision_flips": [],
+  "outcome_counts": {
+    "LIKELY_SAFE": 1601,
+    "PHISHING": 270,
+    "UNCERTAIN": 177
+  }
+}

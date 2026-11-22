@@ -21,11 +21,12 @@ Phishing-detection module of the Bharat AI on-device security assistant.
 | Per-website budgets, n-gram model without pickle, CNN + n-gram combination (`src/training/ensemble.py`) | done, tested; run on GPU: **hybrid + n-gram chosen for full_url** |
 | Threat intelligence: local database + matcher (`src/intelligence/`) | done, tested; built from real feeds |
 | Threat intelligence: answer cache with separate TTL policies (`src/intelligence/cache.py`) | done, tested |
-| Threat intelligence: online lookups, Google Safe Browsing v5 (`src/intelligence/safe_browsing.py`) | done, tested offline; off by default; not yet tried against the real API |
+| Threat intelligence: online lookups, Google Safe Browsing v5 (`src/intelligence/safe_browsing.py`) | done, tested; checked against the real API 2026-11-22 (protobuf answers, Google's test pages match); off by default |
 | URLhaus feed | skipped (decided 2026-11-20): malware, not phishing; terms restrict AI products |
 | Inference engine, step 1: model bundle, runtime, decision engine, single/batch predict (`src/inference/`) | done, tested; run on the real model |
 | Popular-website guard, Tranco top 1,000 (decision rule 4) | done, tested; chosen 2026-11-21 |
 | Inference engine, step 2: queue + micro-batches (`service.py`), background Google checks (`background.py`), benchmarks (`benchmark.py`) | done, tested; laptop benchmark done, Pi pending (Phase 5) |
+| Arm test tooling: device package, parity check, thread sweep (`src/deploy/`, `src/inference/parity.py`) | done; Android phone run done (Pixel 6a, 2026-11-22): 433 tests pass, parity PASS; Pi 5 pending |
 | API, ARM deployment | not started |
 
 ## Requirements
@@ -553,10 +554,37 @@ key for this window only; don't use `setx`, which stores it permanently.
 - **Tests:** they cover all 33 canonicalization examples Google publishes,
   the v5 IPv6 and expression examples, and a fake Google server for caching,
   errors, rate limits and privacy.
-- **Not yet verified against the real API:**
-  - whether the header form of the key is accepted;
-  - whether URL-safe base64 prefixes are accepted. The docs say only
-    "base64", and Google's example has no padding.
+- **Checked against the real API (2026-11-22, with a valid key):**
+  - The key is accepted in the `x-goog-api-key` header.
+  - URL-safe, unpadded base64 prefixes are accepted.
+  - **Answers are protobuf only.**
+    - The overview says "All of the response bodies are protocol-buffer
+      formatted". Asking for JSON with `$alt=json`
+      ([system parameters](https://docs.cloud.google.com/apis/docs/system-parameters))
+      is refused with 400 "Unsupported Output Format".
+    - With a *wrong* key, the error itself does come back as JSON. That misled
+      a first fix.
+    - The client reads protobuf with a small reader built on the field numbers
+      in googleapis'
+      [`safebrowsing/v5/safebrowsing.proto`](https://github.com/googleapis/googleapis/blob/master/google/security/safebrowsing/v5/safebrowsing.proto).
+      No new dependency is needed.
+    - A real answer captured from Google is part of the tests.
+    - Before this fix, every lookup ended as `unavailable`.
+  - Google's own test pages:
+
+    | URL | Result |
+    |---|---|
+    | `http://testsafebrowsing.appspot.com/s/phishing.html` | **match**, exact URL, `phishing` |
+    | `.../s/malware.html` | **match**, `malware` + `harmful_application` |
+    | `https://www.google.com/` | `no_match` |
+
+    Google's cache duration was 300 s.
+  - End to end, `predict` says **PHISHING** for the test phishing page because
+    Google lists it, while the model alone said UNCERTAIN (0.362). Threat
+    intelligence works independently of the model.
+  - Refusals carry Google's short reason, for example
+    `http_400:API_KEY_INVALID` or `http_403:PERMISSION_DENIED`. Only an
+    upper-case code is kept, never free text.
 - **Not implemented:** the Global Cache and local hash lists of Real-Time and
   Local List Mode. This is the plain real-time check with a local cache.
   Host suffixes use the ICANN part of the Public Suffix List, which gives a
@@ -737,6 +765,179 @@ Caveats:
 - Scores can differ in the 8th decimal depending on which URLs share a
   batch (padding width changes the summation order). Decisions do not
   change; the test checks scores to 1e-6.
+
+## Arm test on an Android phone (Phase 5 preview)
+
+There is no Raspberry Pi 5 yet, so a 64-bit Arm Android phone is the first
+Arm device. It runs Debian (aarch64) inside Termux with
+[proot-distro](https://github.com/termux/proot-distro), with the same
+Python packages from PyPI that a Pi uses.
+
+A phone is not a Pi 5. It has a different chip, mixes fast and slow cores,
+slows down when hot, and Android manages its power. proot also adds cost
+to every system call, including thread coordination. So phone speeds are an
+Arm preview, not Pi numbers. What the phone can show for certain:
+- the code runs on Arm (the test suite);
+- the model gives the same answers there (the parity check);
+- how speed depends on the number of threads.
+
+On the laptop (the reference machine):
+
+```powershell
+python -m src.inference.benchmark --save-urls data/processed/benchmark_urls.txt   # once
+python -m src.inference.parity save --urls data/processed/benchmark_urls.txt       # reference scores
+python -m src.deploy.package          # -> dist/phishing_device_<model_version>.zip (8.4 MB)
+```
+
+- **Package** ([src/deploy/package.py](src/deploy/package.py)): one zip
+  with everything the device needs.
+  - Contents: code, tests, config, the model bundle, the local threat
+    database, the benchmark URLs, the reference scores, a short
+    `DEVICE_README.txt`, and `MANIFEST.json` with the SHA-256 of every file.
+  - It refuses secret-looking files (`.env*`, `*.key`, `*.pem`, `secrets.*`,
+    ...). API keys never go to the device.
+  - `python3 -m src.deploy.package verify` checks the unzipped files with
+    plain Python, before anything is installed.
+  - Tested: unzipped into an empty folder, the full test suite and the
+    parity check passed from there.
+- **Parity check** ([src/inference/parity.py](src/inference/parity.py)):
+  - The reference machine saves P(phishing), the decision and each member's
+    logit for the 2,048 URLs, in fixed batches of 64. It stores a SHA-256 of
+    the URL list, not the URLs.
+  - The device recomputes and compares. It passes when no decision differs
+    and P(phishing) differs by at most 1e-4.
+  - Laptop against itself: identical.
+- **Benchmark additions:** `--thread-sweep 1,2,4,8` measures the model alone
+  per thread count. On Linux the report lists core types (for example
+  "Cortex-A55 @ 1800 MHz x 4") and the board name. No host names are recorded.
+- **PyTorch on the device:** install from the CPU index,
+  `pip install torch --index-url https://download.pytorch.org/whl/cpu`.
+  Since PyTorch 2.11, a plain `pip install torch` on aarch64 Linux fetches
+  the CUDA build
+  ([PyTorch blog](https://pytorch.org/blog/vllm-and-pytorch-work-together-to-improve-the-developer-experience-on-aarch64/),
+  [Arm install guide](https://learn.arm.com/install-guides/pytorch/)).
+- **Termux** comes from F-Droid or GitHub, not Google Play (the Play build is
+  experimental). Don't mix sources. On Android 12+, Android may kill
+  processes that use a lot of CPU ("signal 9")
+  ([termux-app README](https://github.com/termux/termux-app)).
+- **Driving the phone from the laptop** (optional; nothing new is opened on
+  the Wi-Fi):
+  - Android's Wireless debugging (`adb pair`, Android 11+) connects the
+    laptop and phone. A USB cable works the same way.
+  - Termux's SSH server (`pkg install openssh`) listens only on the phone's
+    `127.0.0.1:8022` and accepts only a key, not a password.
+  - `adb forward tcp:8022 tcp:8022` carries SSH through the paired adb link.
+    `ssh` and `scp` then work from the laptop.
+  - Inside Debian, the Termux home folder is at
+    `/data/data/com.termux/files/home`; proot-distro mounts it by default.
+  - Root is not needed and not used.
+  - If every download on the phone fails with "self-signed certificate in
+    certificate chain", something on the phone's network path is replacing
+    HTTPS certificates. Common causes: a Wi-Fi sign-in page, a VPN, proxy or
+    HTTPS-filtering app, or a firewall that inspects HTTPS.
+    - Look at the *issuer* in the chain the device receives. The site name
+      alone proves nothing, because inspecting firewalls copy it.
+    - On the college Wi-Fi (2026-11-22) the phone got certificates issued by
+      "Sophos SSL CA". The phone had not signed in to the Wi-Fi's login page
+      (a Sophos portal): a plain-HTTP request came back as a redirect to
+      `https://10.10.10.2:8090/httpclient.html`.
+    - The fix is to sign in with your own college account, the same way as
+      on the laptop.
+    - A Raspberry Pi has no browser to sign in with. Plan for this in
+      Phase 5: ask IT how headless devices get access.
+    - Fix the network (or use another one) instead of turning off
+      certificate checks.
+    - Only the install needs internet. The tests and checks run offline: web
+      calls in the tests are faked, and tldextract uses its built-in suffix
+      list.
+  - Sources:
+    [adb](https://developer.android.com/tools/adb),
+    [Termux openssh package](https://github.com/termux/termux-packages/tree/master/packages/openssh),
+    [proot-distro](https://github.com/termux/proot-distro).
+
+### Phone results (Pixel 6a, 2026-11-22)
+
+Device and setup:
+- Google Pixel 6a, Android 17, Google Tensor: 2 × Cortex-X1 @ 2.80 GHz,
+  2 × Cortex-A76 @ 2.25 GHz, 4 × Cortex-A55 @ 1.80 GHz.
+- Debian 13 in proot-distro, Python 3.13.5.
+- The same package versions as the laptop: PyTorch 2.15.0 CPU, numpy 2.4.6,
+  scikit-learn 1.9.1, scipy 1.17.1. So the parity check compares Arm with x86
+  and nothing else.
+- Install took about 3 minutes. All checks took about 4 more.
+- Reports (UTC in the names):
+  - `reports/parity_check_aarch64_20261121T231845Z.json`;
+  - `reports/benchmark_aarch64_20261121T232137Z.json` (run 1);
+  - `reports/benchmark_aarch64_20261121T232533Z.json` (run 2).
+
+Correctness:
+- `package verify` and `bundle verify`: every file arrived intact.
+- Test suite: **433 passed** in 33.5 s.
+- Parity against the laptop: **PASS**.
+  - P(phishing) differs by at most 4.1e-7 (tolerance 1e-4). The mean
+    difference is 8.4e-9, and 472 of 2,048 scores are bit-identical.
+  - **0 decisions differ.**
+  - Largest logit difference: 5.2e-6 for the CNN, 5.3e-8 for the n-gram model.
+- Demo: the same answers as the laptop. `github.com/login` is UNCERTAIN
+  0.968 (popular-website guard); the Wikipedia page is LIKELY_SAFE 0.003.
+
+Speed and memory. Two full runs, 4 minutes apart; the run-to-run spread was
+up to about 20%:
+- Memory: 366–370 MB resident after loading, 491 MB peak. The laptop used 357
+  and 510 MB.
+- Load time: 0.16–0.21 s.
+
+Model alone, PyTorch default of 8 threads:
+
+| Batch | P50 ms, run 1 / run 2 | URLs/s, run 1 / run 2 | Laptop URLs/s |
+|---|---|---|---|
+| 1 | 7.5 / 6.1 | 118 / 143 | 258 |
+| 16 | 38.9 / 38.7 | 396 / 384 | 891 |
+| 32 | 57.7 / 63.6 | 545 / 490 | 986 |
+| 64 | 104.0 / 112.4 | 600 / 561 | 929 |
+| 128 | 214.5 / 230.8 | 587 / 552 | 1,028 |
+
+Thread sweep, model alone:
+
+| Threads | Batch 1: P50 ms | Batch 1: URLs/s | Batch 64: URLs/s |
+|---|---|---|---|
+| 1 | **2.8 / 2.4** | **322 / 378** | 538 / 630 |
+| 2 | 7.4 / 6.1 | 126 / 155 | 584 / 754 |
+| 4 | 7.0 / 5.8 | 129 / 159 | **688 / 834** |
+| 8 | 6.7 / 5.1 | 132 / 171 | 679 / 802 |
+
+| Service, 1 URL per request, no cache | P50 ms | requests/s | Laptop requests/s |
+|---|---|---|---|
+| 1 caller | 11.3 / 11.4 | 85 / 84 | 180 |
+| 4 callers | 34.1 / 36.4 | 115 / 108 | 239 |
+| 16 callers | 77.5 / 81.9 | 198 / 196 | 342 |
+| 64 callers | 212.5 / 204.0 | 286 / 284 | 588 |
+
+Full path, calls of 64:
+- cold cache: 505 / 452 URLs/s;
+- warm cache: 5,087 / 4,564 URLs/s.
+
+What this shows:
+- **The code runs on Arm and gives the same answers.** This is the main
+  result.
+- **The thread count is a per-device setting.** For one URL at a time,
+  1 thread was 2–3× faster than 4 or 8 in both runs. Splitting a tiny job
+  across fast and slow cores costs more than it saves. For batches of 64,
+  4 threads were best, and 8 were no better.
+  - The service currently uses PyTorch's default (all cores).
+  - Choose the setting from the Pi 5's own sweep in Phase 5. The Pi has
+    4 equal cores, so its best setting may differ.
+- At 8 threads the phone is roughly half as fast as the laptop.
+
+Caveats:
+- proot adds overhead to system calls.
+- Android manages the phone's power. The phone ran on battery (60%, 37.9 °C
+  at the end).
+- One device, two runs. These are not Pi 5 numbers.
+- The `android_kernel` field in these reports says `false`, which is wrong:
+  inside proot the kernel name is fake ("6.17.0-PRoot-Distro").
+  `machine_info()` now reports `proot` and `android` instead, detecting
+  Android by its `/system/build.prop` file.
 
 ## Training on a GPU PC (Windows)
 

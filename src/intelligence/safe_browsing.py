@@ -31,6 +31,14 @@ Rules followed (official pages, read 2026-11-18/20)
   * The API key goes in the x-goog-api-key header (Google Cloud's recommended
     form, keeping it out of URLs and logs); `api_key_in_header: false` in
     config/safe_browsing.json falls back to the documented ?key= form.
+  * Response format: "All of the response bodies are protocol-buffer formatted"
+    (v5 overview). JSON is not offered: with a valid key, `$alt=json` is
+    refused with 400 "Unsupported Output Format" (live, 2026-11-22). Answers
+    are therefore read with a small protobuf reader, built on the field
+    numbers in googleapis' safebrowsing/v5/safebrowsing.proto. It was checked
+    against Google's real answer for its test page
+    testsafebrowsing.appspot.com/s/phishing.html. Refusals keep Google's short
+    reason, e.g. "http_400:API_KEY_INVALID".
   * Not implemented: the Global Cache / local hash lists of Real-Time and
     Local List Mode. This client is the plain real-time check with a local cache.
 
@@ -71,6 +79,7 @@ ATTRIBUTION = "Advisory provided by Google"
 CONFIG_PATH = Path("config/safe_browsing.json")
 MAX_PREFIXES_PER_REQUEST = 30
 MAX_POSITIVE_CACHE_SECONDS = 30 * 60           # terms: no warning on data older than 30 minutes
+MAX_CACHE_SECONDS = 24 * 3600                   # cap on any cacheDuration (the proto's 24 h limit)
 MAX_UNESCAPE_ROUNDS = 1000
 THREATS = {"SOCIAL_ENGINEERING": PHISHING_THREAT, "MALWARE": MALWARE_THREAT,
            "UNWANTED_SOFTWARE": UNWANTED_SOFTWARE_THREAT,
@@ -79,7 +88,6 @@ ATTRIBUTES = {"CANARY", "FRAME_ONLY"}            # both: not a match for a top-l
 _HEX_ESCAPE = re.compile(rb"%([0-9A-Fa-f]{2})")
 _SCHEME = re.compile(rb"^([A-Za-z][A-Za-z0-9+.\-]*)://")
 _IPV4_PART = re.compile(r"0[xX][0-9a-fA-F]*|0[0-7]*|[1-9][0-9]*")
-_DURATION = re.compile(r"^(\d+(?:\.\d{1,9})?)s$")
 
 
 # --------------------------------------------------------------------- canonicalization
@@ -234,11 +242,124 @@ def _b64decode(text: str) -> bytes:
                             validate=True)
 
 
-def _duration(text) -> float:
-    m = _DURATION.match(text) if isinstance(text, str) else None
-    if m is None:
-        raise ValueError("bad cacheDuration")
-    return float(m.group(1))
+# --------------------------------------------------------------------- protobuf answers
+# Field numbers from googleapis (read 2026-11-22):
+#   google/security/safebrowsing/v5/safebrowsing.proto
+#     SearchHashesResponse { repeated FullHash full_hashes = 1; Duration cache_duration = 2; }
+#     FullHash { bytes full_hash = 1; repeated FullHashDetail full_hash_details = 2; }
+#     FullHashDetail { ThreatType threat_type = 1; repeated ThreatAttribute attributes = 2; }
+#   google/protobuf/duration.proto  Duration { int64 seconds = 1; int32 nanos = 2; }
+#   google/rpc/status.proto          Status { int32 code = 1; string message = 2; repeated Any details = 3; }
+#   google/protobuf/any.proto        Any { string type_url = 1; bytes value = 2; }
+#   google/rpc/error_details.proto   ErrorInfo { string reason = 1; ... }
+# A read-only wire-format reader for these few messages, instead of the protobuf package.
+PROTOBUF_TYPE = "application/x-protobuf"
+THREAT_TYPE_NUMBERS = {1: "MALWARE", 2: "SOCIAL_ENGINEERING", 3: "UNWANTED_SOFTWARE",
+                       4: "POTENTIALLY_HARMFUL_APPLICATION"}          # 0 = THREAT_TYPE_UNSPECIFIED
+ATTRIBUTE_NUMBERS = {1: "CANARY", 2: "FRAME_ONLY"}                    # 0 = THREAT_ATTRIBUTE_UNSPECIFIED
+RPC_CODES = {3: "INVALID_ARGUMENT", 5: "NOT_FOUND", 7: "PERMISSION_DENIED", 8: "RESOURCE_EXHAUSTED",
+             9: "FAILED_PRECONDITION", 13: "INTERNAL", 14: "UNAVAILABLE", 16: "UNAUTHENTICATED"}  # google/rpc/code.proto
+
+
+def _varint(buf: bytes, i: int) -> tuple[int, int]:
+    value = shift = 0
+    while True:
+        if i >= len(buf) or shift > 63:
+            raise ValueError("truncated or too long varint")
+        b = buf[i]
+        i += 1
+        value |= (b & 0x7F) << shift
+        if b < 0x80:
+            return value, i
+        shift += 7
+
+
+def _pb_fields(buf: bytes):
+    """(field number, wire type, value) for each field of one message. The value is an
+    int for varints and bytes otherwise. Callers skip fields they do not know."""
+    i = 0
+    while i < len(buf):
+        key, i = _varint(buf, i)
+        number, wire = key >> 3, key & 7
+        if number == 0:
+            raise ValueError("field number 0")
+        if wire == 0:
+            value, i = _varint(buf, i)
+        elif wire in (1, 5):                                  # fixed64 / fixed32
+            size = 8 if wire == 1 else 4
+            value, i = buf[i:i + size], i + size
+        elif wire == 2:                                       # length-delimited
+            size, i = _varint(buf, i)
+            value, i = buf[i:i + size], i + size
+        else:                                                 # groups: not used by these messages
+            raise ValueError(f"unsupported wire type {wire}")
+        if i > len(buf):
+            raise ValueError("truncated field")
+        yield number, wire, value
+
+
+def _pb_enums(wire: int, value) -> list[int]:
+    """A repeated enum field: packed (one run of varints, the proto3 default) or not."""
+    if wire == 0:
+        return [value]
+    if wire != 2:
+        raise ValueError("bad wire type for an enum")
+    out, i = [], 0
+    while i < len(value):
+        v, i = _varint(value, i)
+        out.append(v)
+    return out
+
+
+def _decode_search_response(buf: bytes):
+    """SearchHashesResponse -> ([(full hash, [(threat type, [attribute, ...])])], cache seconds).
+    Enum values this client does not know come back as None."""
+    full_hashes, ttl = [], 0.0
+    for number, wire, value in _pb_fields(buf):
+        if number == 1 and wire == 2:                         # FullHash
+            h, details = b"", []
+            for n2, w2, v2 in _pb_fields(value):
+                if n2 == 1 and w2 == 2:
+                    h = v2
+                elif n2 == 2 and w2 == 2:                     # FullHashDetail
+                    threat, attrs = 0, []
+                    for n3, w3, v3 in _pb_fields(v2):
+                        if n3 == 1 and w3 == 0:
+                            threat = v3
+                        elif n3 == 2:
+                            attrs += _pb_enums(w3, v3)
+                    details.append((THREAT_TYPE_NUMBERS.get(threat),
+                                    [ATTRIBUTE_NUMBERS.get(a) for a in attrs]))
+            full_hashes.append((h, details))
+        elif number == 2 and wire == 2:                       # Duration
+            seconds = nanos = 0
+            for n2, w2, v2 in _pb_fields(value):
+                if n2 == 1 and w2 == 0:
+                    seconds = v2
+                elif n2 == 2 and w2 == 0:
+                    nanos = v2
+            if seconds >= 2**63 or nanos >= 2**31:            # negative numbers on the wire
+                raise ValueError("negative cache duration")
+            ttl = seconds + nanos / 1e9
+    return full_hashes, ttl
+
+
+def _status_reasons(buf: bytes) -> list[str | None]:
+    """google.rpc.Status (protobuf) -> [ErrorInfo reasons..., canonical code name]."""
+    reasons, code = [], 0
+    for number, wire, value in _pb_fields(buf):
+        if number == 1 and wire == 0:
+            code = value
+        elif number == 3 and wire == 2:                       # Any
+            type_url, payload = b"", b""
+            for n2, w2, v2 in _pb_fields(value):
+                if n2 == 1 and w2 == 2:
+                    type_url = v2
+                elif n2 == 2 and w2 == 2:
+                    payload = v2
+            if type_url.endswith(b"/google.rpc.ErrorInfo"):
+                reasons += [v.decode("ascii", "replace") for n, w, v in _pb_fields(payload) if n == 1 and w == 2]
+    return reasons + [RPC_CODES.get(code)]
 
 
 # --------------------------------------------------------------------- config
@@ -446,33 +567,32 @@ class SafeBrowsingClient:
                 if r.status_code == 429:
                     raise _RequestFailed("http_429", _retry_after(r))
                 if r.status_code < 500:                   # 400 bad request, 403 bad key: no retry
-                    raise _RequestFailed(f"http_{r.status_code}")
+                    raise _RequestFailed(f"http_{r.status_code}{_google_reason(r)}")
                 reason = f"http_{r.status_code}"
             if attempt + 1 < attempts:
                 self._sleep(self.config.retry_delay_seconds)
         raise _RequestFailed(reason)
 
     def _parse(self, r: httpx.Response) -> tuple[dict[bytes, tuple], float]:
+        if r.headers.get("content-type", "").split(";")[0].strip().lower() != PROTOBUF_TYPE:
+            raise _RequestFailed("bad_response")          # e.g. a Wi-Fi login page
         try:
-            data = r.json()
-            ttl = _duration(data.get("cacheDuration", "0s"))
+            full_hashes, ttl = _decode_search_response(r.content)
             answer: dict[bytes, tuple] = {}
-            for fh in data.get("fullHashes", []) or []:
-                h = _b64decode(fh["fullHash"])
+            for h, details in full_hashes:
                 if len(h) != 32:
                     raise ValueError("full hash is not 32 bytes")
-                details = []
-                for d in fh.get("fullHashDetails", []) or []:
-                    threat, attrs = d.get("threatType"), d.get("attributes", []) or []
-                    if threat not in THREATS or any(a not in ATTRIBUTES for a in attrs):
+                threats = []
+                for threat, attrs in details:
+                    if threat is None or None in attrs:
                         continue                          # unknown value: ignore the whole detail
                     if attrs:                             # CANARY / FRAME_ONLY: not for a page
                         continue
-                    details.append(THREATS[threat])
-                answer[h] = tuple(sorted(set(details)))
-        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                    threats.append(THREATS[threat])
+                answer[h] = tuple(sorted(set(answer.get(h, ())) | set(threats)))
+        except ValueError as exc:
             raise _RequestFailed("bad_response") from exc
-        return answer, ttl
+        return answer, min(ttl, MAX_CACHE_SECONDS)
 
     def _failed(self, retry_after: float | None) -> None:
         with self._lock:
@@ -509,6 +629,31 @@ class SafeBrowsingClient:
         return {"enabled": self.enabled, "requests_sent": self.requests_sent,
                 "consecutive_failures": self._failures, "blocked_for_seconds": blocked,
                 "prefix_cache": self._cache.stats()}
+
+
+_GOOGLE_REASON = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+
+
+def _google_reason(r: httpx.Response) -> str:
+    """':API_KEY_INVALID' from Google's error (ErrorInfo reason, else the status code
+    name), protobuf or JSON, or ''. Only an upper-case code is kept, never free text,
+    so nothing else from the answer (or the request) ends up in results and logs."""
+    ctype = r.headers.get("content-type", "").lower()
+    try:
+        if PROTOBUF_TYPE in ctype:
+            candidates = _status_reasons(r.content)
+        elif "json" in ctype:
+            err = r.json().get("error")
+            candidates = [d.get("reason") for d in err.get("details", []) if isinstance(d, dict)]
+            candidates.append(err.get("status"))
+        else:
+            return ""
+    except (ValueError, AttributeError, TypeError):
+        return ""
+    for c in candidates:
+        if isinstance(c, str) and _GOOGLE_REASON.match(c):
+            return f":{c}"
+    return ""
 
 
 def _retry_after(r: httpx.Response) -> float | None:

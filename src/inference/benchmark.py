@@ -4,6 +4,7 @@
     python -m src.inference.benchmark --quick               # short smoke run
     python -m src.inference.benchmark --save-urls data/processed/benchmark_urls.txt
     python -m src.inference.benchmark --urls benchmark_urls.txt --threads 4   # e.g. on the Pi
+    python -m src.inference.benchmark --thread-sweep 1,2,4,8   # model alone per thread count first
 
 Everything reported is measured here; nothing is estimated or extrapolated.
   model      runtime.score() alone at batch sizes 1/16/32/64/128: latency per
@@ -15,6 +16,9 @@ Everything reported is measured here; nothing is estimated or extrapolated.
              micro-batches of InferenceService, no cache (every URL is scored):
              per-request latency P50/P95/P99, requests per second, batch sizes
   memory     resident memory (RSS) at start, after loading and at the peak
+  threads    (--thread-sweep) the model alone at batch sizes 1 and 64 for each
+             PyTorch thread count: phones mix fast and slow cores, and more
+             threads are not always faster
 Google Safe Browsing is not called: a benchmark must not depend on the network.
 The report goes to reports/benchmark_<machine>_<UTC time>.json. Use the same
 URL file on every machine (--save-urls here, --urls there) to compare them.
@@ -25,7 +29,6 @@ import argparse
 import ctypes
 import json
 import math
-import os
 import platform
 import random
 import sys
@@ -43,6 +46,7 @@ from src.intelligence.local_database import ThreatIntelConfig, ThreatIntelDB
 from src.preprocessing.url_normalizer import InvalidURLError, NormalizedURL, normalize_url
 
 from .bundle import MODELS_DIR, load_bundle
+from .machine import machine_info
 from .predict import Predictor
 from .runtime import ModelRuntime
 from .service import InferenceService, ServiceConfig, percentiles
@@ -198,6 +202,20 @@ def bench_service(runtime: ModelRuntime, threat_db: ThreatIntelDB | None, urls: 
     return out
 
 
+def bench_threads(runtime: ModelRuntime, urls: Sequence[NormalizedURL], thread_counts: Sequence[int],
+                  min_batches: int, max_seconds: float) -> list[dict]:
+    """The model alone at batch sizes 1 and 64 for each thread count; restores the setting."""
+    before, out = torch.get_num_threads(), []
+    try:
+        for t in thread_counts:
+            torch.set_num_threads(t)
+            for x in bench_model(runtime, urls, (1, 64), min_batches, max_seconds):
+                out.append({"threads": t, **x})
+    finally:
+        torch.set_num_threads(before)
+    return out
+
+
 # --------------------------------------------------------------------- driver
 def load_urls(path: Path | None, sample: int, seed: int = 0) -> tuple[list[str], str]:
     """URLs from a file (one per line) or a random sample of the validation split."""
@@ -221,6 +239,7 @@ def run_benchmark(bundle_dir: Path | str, urls: Sequence[str], *, url_source: st
                   batch_sizes: Sequence[int] = BATCH_SIZES, concurrency: Sequence[int] = CONCURRENCY,
                   min_batches: int = 30, max_seconds: float = 20.0, service_requests: int = 1000,
                   service_config: ServiceConfig | None = None, threads: int | None = None,
+                  thread_sweep: Sequence[int] = (),
                   log: Callable[[str], None] = lambda s: None) -> dict:
     mem_start = memory()
     if threads:
@@ -243,6 +262,10 @@ def run_benchmark(bundle_dir: Path | str, urls: Sequence[str], *, url_source: st
     db_status = "not used" if threat_db is None else threat_db.lookup(normalized[0]).status
     config = service_config or ServiceConfig()
     log(f"model loaded in {load.wall:.2f} s; {len(normalized)} URLs; torch threads {torch.get_num_threads()}")
+    sweep = []
+    if thread_sweep:
+        log(f"model alone per thread count {list(thread_sweep)} ...")
+        sweep = bench_threads(runtime, normalized, thread_sweep, min_batches, max_seconds)
     log("model alone ...")
     model = bench_model(runtime, normalized, batch_sizes, min_batches, max_seconds)
     log("predictor (cold / warm cache) ...")
@@ -256,18 +279,14 @@ def run_benchmark(bundle_dir: Path | str, urls: Sequence[str], *, url_source: st
     bundle_bytes = sum(p.stat().st_size for p in Path(bundle.path).iterdir() if p.is_file())
     return {
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "machine": {"system": platform.system(), "release": platform.release(),
-                    "machine": platform.machine(), "processor": platform.processor(),
-                    "cpu_count": os.cpu_count(), "python": platform.python_version(),
-                    "torch": str(torch.__version__), "torch_threads": torch.get_num_threads(),
-                    "numpy": np.__version__},
+        "machine": machine_info(),
         "model_version": runtime.model_version, "bundle_bytes": bundle_bytes,
         "urls": {"count": len(normalized), "source": url_source},
         "threat_db_lookup": db_status,
         "load_seconds": round(load.wall, 3),
         "memory_bytes": {"start_rss": mem_start["rss"], "after_load_rss": mem_loaded["rss"],
                          "end_rss": mem_end["rss"], "peak_rss": mem_end["peak_rss"]},
-        "model": model, "predictor": pred, "service": service,
+        "thread_sweep": sweep, "model": model, "predictor": pred, "service": service,
         "service_config": {k: getattr(config, k) for k in ("max_batch_urls", "max_wait_ms",
                                                            "max_queue_urls", "model_batch_size")},
     }
@@ -282,9 +301,19 @@ def print_report(r: dict) -> None:
     print(f"\n{m['system']} {m['machine']}, {m['cpu_count']} CPUs, torch {m['torch']} "
           f"({m['torch_threads']} threads); {r['model_version']}; {r['urls']['count']} URLs "
           f"({r['urls']['source']})")
+    if m.get("cores"):
+        print("cores: " + ", ".join(f"{n} x {k}" for k, n in m["cores"].items())
+              + (f" ({m['board']})" if m.get("board") else ""))
     mem = r["memory_bytes"]
     print(f"load {r['load_seconds']:.2f} s | memory: start {_mb(mem['start_rss'])}, after load "
           f"{_mb(mem['after_load_rss'])}, peak {_mb(mem['peak_rss'])} | bundle {_mb(r['bundle_bytes'])}")
+    if r.get("thread_sweep"):
+        print("\nthreads, model alone  batch  P50 ms  P95 ms  P99 ms   ms/URL    URLs/s  cores")
+        for x in r["thread_sweep"]:
+            lat = x["latency_ms"]
+            print(f"  {x['threads']:>3} threads        {x['batch_size']:>5} {lat['p50']:>7.2f} {lat['p95']:>7.2f} "
+                  f"{lat['p99']:>7.2f} {x['ms_per_url']:>8.3f} {x['urls_per_second']:>9,.0f} "
+                  f"{x['cpu_cores_busy']:>6.2f}")
     print("\nmodel alone          batch  P50 ms  P95 ms  P99 ms   ms/URL    URLs/s  cores")
     for x in r["model"]:
         lat = x["latency_ms"]
@@ -314,6 +343,7 @@ def main(argv=None) -> int:
     ap.add_argument("--intel-config", type=Path, default=Path("config/threat_intel.json"))
     ap.add_argument("--service-config", type=Path, default=Path("config/inference.json"))
     ap.add_argument("--threads", type=int, default=None, help="torch threads (default: PyTorch's choice)")
+    ap.add_argument("--thread-sweep", default="", help="e.g. 1,2,4,8: model alone per thread count")
     ap.add_argument("--batch-sizes", default=",".join(map(str, BATCH_SIZES)))
     ap.add_argument("--concurrency", default=",".join(map(str, CONCURRENCY)))
     ap.add_argument("--service-requests", type=int, default=1000)
@@ -335,7 +365,9 @@ def main(argv=None) -> int:
                            min_batches=min_batches, max_seconds=args.max_seconds,
                            service_requests=requests,
                            service_config=ServiceConfig.from_file(args.service_config),
-                           threads=args.threads, log=lambda s: print(s, flush=True))
+                           threads=args.threads,
+                           thread_sweep=[int(x) for x in args.thread_sweep.split(",") if x.strip()],
+                           log=lambda s: print(s, flush=True))
     print_report(report)
     args.out.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
