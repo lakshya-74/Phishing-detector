@@ -27,7 +27,11 @@ Phishing-detection module of the Bharat AI on-device security assistant.
 | Popular-website guard, Tranco top 1,000 (decision rule 4) | done, tested; chosen 2026-11-21 |
 | Inference engine, step 2: queue + micro-batches (`service.py`), background Google checks (`background.py`), benchmarks (`benchmark.py`) | done, tested; laptop benchmark done, Pi pending (Phase 5) |
 | Arm test tooling: device package, parity check, thread sweep (`src/deploy/`, `src/inference/parity.py`) | done; Android phone run done (Pixel 6a, 2026-11-22): 433 tests pass, parity PASS; Pi 5 pending |
-| API, ARM deployment | not started |
+| HTTP API: FastAPI, `/predict` `/health` `/ready` `/model-info` `/metrics` (`src/api/`) | done, tested (32 API tests), run live on the laptop (Phase 6 step 1) |
+| SMS module → link check bridge (`src/integration/sms_bridge.py`) | done, tested (45 tests), run with the team's real SMS model, in process and over HTTP (2026-11-23) |
+| NIDS connection | reviewed 2026-11-23: needs a hostname reader on the NIDS side and our hostname model; plan below |
+| Phone export for the combined APK (`src/deploy/mobile_export.py`): ExecuTorch `.pte`, data files, reference answers | done, tested (8 tests); `.pte` checked: 0 decision changes on 2,066 links; handed to Vishwajeet 2026-11-23 |
+| API on the phone (Arm), Docker ARM64 image | next (Phase 6 steps 2–3); Pi 5 on hold |
 
 ## Requirements
 
@@ -939,6 +943,311 @@ Caveats:
   `machine_info()` now reports `proot` and `android` instead, detecting
   Android by its `/system/build.prop` file.
 
+## HTTP API (Phase 6)
+
+```powershell
+python -m src.api.app                  # http://127.0.0.1:8000   interactive docs: /docs
+python -m src.api.app --port 8123      # if port 8000 is taken (on the laptop it was)
+uvicorn src.api.app:create_app --factory --workers 1 --port 8000   # the same with uvicorn's options
+```
+
+The API has **no login**. Keep it on `127.0.0.1` (the default) or on a private
+Docker network, and never expose it to untrusted networks. `--host 0.0.0.0`
+is for inside a container.
+
+| Endpoint | What it does |
+|---|---|
+| `POST /predict` | `{"urls": [...], "input_type": "full_url" \| "domain"}` → one result per URL, in the same order |
+| `GET /health` | The process is alive (liveness): always 200. |
+| `GET /ready` | The model is loaded and its worker runs (readiness): 200, otherwise 503 with the reason. |
+| `GET /model-info` | Model version, thresholds, validation numbers, threat-intel status (feed age, stale), limits. |
+| `GET /metrics` | Counters in Prometheus' text format. |
+| `GET /docs`, `/openapi.json` | The documented contract, generated from [src/api/schemas.py](src/api/schemas.py). |
+
+Real response (laptop, 2026-11-22; the same URLs had been asked before, so `cache_hit` is true):
+
+```json
+{"results": [
+  {"url": "https://en.wikipedia.org/wiki/Phishing", "input_type": "full_url",
+   "decision": "likely_safe", "risk_score": 0.003273669661608283, "source": "model",
+   "model_version": "full_url-edb8f2cc8642", "cache_hit": true,
+   "reasons": ["model: LIKELY_SAFE (P(phishing) = 0.003)",
+               "not on any threat list checked (this is not evidence of safety)"],
+   "threat_types": [], "attributions": [], "threat_intel": [], "pending": [], "error": null},
+  {"url": "http://paypal-account-verify.secure-login-update.xyz/signin/webscr?cmd=_login",
+   "input_type": "full_url", "decision": "phishing", "risk_score": 0.9983436053570749,
+   "source": "model", "...": "..."}],
+ "model_version": "full_url-edb8f2cc8642", "request_id": "readme-example"}
+```
+
+- `decision` is `phishing`, `uncertain` or `likely_safe`. It is `null` only for
+  invalid input, which then has an `error` such as
+  `invalid_input:illegal_characters`.
+- `risk_score` is the calibrated model P(phishing). It is `null` when no model
+  ran: domain input, link shorteners, invalid input.
+- `source` names what set the decision: `model`, `threat_intel` or `rule`.
+- `reasons` are plain-language reasons. They can feed the Llama advisory.
+- `pending` lists online checks still running. Ask again for their answer.
+- One bad URL never fails the request; it only gets its own `error`.
+
+| Status | When |
+|---|---|
+| 200 | Answered, including per-URL `error` results. |
+| 413 | Body over `max_body_bytes` (refused before it is read), or more than `max_urls_per_request` URLs. |
+| 422 | Malformed request: empty list, wrong types, unknown fields, broken JSON, unknown `input_type`. The submitted input is not echoed back. |
+| 503 + `Retry-After` | Not ready, queue full, timed out, or shutting down. |
+| 500 | Internal error. Details go only to the server log. |
+
+Every answer carries `X-Request-ID`. A caller's own ID (letters, digits,
+`._-`, up to 64 characters) is kept, so NIDS logs can be matched.
+
+How it is built ([src/api/app.py](src/api/app.py)):
+- **No model code in the API.** It calls `InferenceService`, which also works
+  without FastAPI.
+- **Loaded once, at startup.** The model loads in FastAPI's
+  [lifespan](https://fastapi.tiangolo.com/advanced/events/), before any request
+  is accepted.
+  - One worker thread owns the model, and all requests share its bounded
+    queue. Concurrent requests cannot load the model twice or exhaust memory.
+    A test sends 24 requests from 8 threads and checks that the model was
+    loaded once.
+  - Run **one** process (`--workers 1`): every extra process would load
+    another copy.
+  - If loading fails, the server still starts. `/health` says ok, and
+    `/ready` and `/predict` give 503 with the reason.
+- **Limits:**
+  - [config/api.json](config/api.json): `max_body_bytes` 4 MiB,
+    `request_timeout_seconds` 15, `retry_after_seconds` 1, `docs_enabled`,
+    `log_phishing_urls`.
+  - [config/inference.json](config/inference.json): 256 URLs per request,
+    queue size, queue timeout.
+  - The body limit is Starlette's
+    [`RequestBodyLimitMiddleware`](https://starlette.dev/middleware/), plus a
+    check of `Content-Length` that answers in the API's JSON format.
+  - `python -m src.api.app` also sets uvicorn's `--limit-concurrency 128`
+    (uvicorn answers 503 above it), `--timeout-keep-alive 5`, and no
+    `Server` header.
+- **Logs:**
+  - One line per `/predict` call: request ID, counts per decision, pending,
+    cache hits, time.
+  - URLs are not logged, except PHISHING verdicts, and those only after
+    [src/utils/redact.py](src/utils/redact.py). Query values, user:password
+    and the fragment are removed, odd parameter names are hidden, control
+    characters are replaced, and the URL is cut at 200 characters. Example:
+    `phishing id=live-check-1 source=model url=http://paypal-account-verify.secure-login-update.xyz/signin/webscr?cmd=REDACTED`.
+  - Not caught: a secret inside the path itself.
+- **Metrics** follow Prometheus'
+  [text format](https://prometheus.io/docs/instrumenting/exposition_formats/)
+  and [naming guide](https://prometheus.io/docs/practices/naming/), with no
+  client library:
+  - `phishing_ready`, `phishing_model_info{model_version}`;
+  - `phishing_http_requests_total{endpoint,code}`,
+    `phishing_http_request_duration_seconds`;
+  - `phishing_urls_total{decision}`, `phishing_cache_hits_total`,
+    `phishing_pending_answers_total`;
+  - `phishing_queue_urls`, `phishing_service_requests_total{result}`,
+    `phishing_service_batches_total`,
+    `phishing_service_recent_latency_seconds{quantile}`.
+- **Network:** none, unless `SAFE_BROWSING_API_KEY` is set.
+
+Live run on the laptop (2026-11-22). Real HTTP to the running server, the real
+model, unique URLs from the benchmark sample, nothing cached:
+
+| Load | P50 | P95 | Throughput |
+|---|---|---|---|
+| 1 caller, 1 URL per request | 11.1 ms | 14.3 ms | 89 requests/s |
+| 16 callers, 1 URL per request | 95.3 ms | 141.9 ms | 155 requests/s |
+| 1 caller, 64 URLs per request | 94.0 ms | 108.7 ms | 667 URLs/s |
+
+- HTTP + JSON add about 6 ms per request on Windows. The service alone
+  answered one URL in 5.3 ms.
+- **Callers should send URLs in batches.** 64 per request scored 4–7 times
+  more URLs per second than one at a time.
+- Laptop timings vary by about ±30%. Phone and Pi numbers will be measured
+  there.
+- Tests ([tests/test_api.py](tests/test_api.py), 32): normal, single, batch,
+  duplicate, Unicode (IDN) and too-long URLs, domain input, empty and
+  malformed input, broken JSON, too many URLs, body over the limit (with and
+  without `Content-Length`), a full queue, a timeout, an internal error that
+  is not leaked, a failed model load, shutdown, concurrent callers,
+  `/model-info`, valid Prometheus text, request IDs, logs without query
+  values, and the redaction rules.
+- Known warning in the tests only: Starlette 1.10 deprecates `httpx` in its
+  `TestClient` in favour of a package named `httpx2`. It is left as is until
+  that package is checked.
+
+## Connecting the team's modules (Phase 7)
+
+Bharat AI has three detectors: SMS scams, network intrusions (NIDS) and this
+link checker. The team plan makes **SMS + links** the main end-to-end path, and
+it says the explanation layer may call a link malicious only when this module
+says so. The NIDS joins once it can name the websites it sees.
+
+### SMS scam detector → link check (done)
+
+[src/integration/sms_bridge.py](src/integration/sms_bridge.py) connects the
+SMS module (package `sms_detection`) to this detector. For one message:
+
+1. The SMS module scores the text: label `ham`/`spam`/`smishing`, risk band
+   `low`/`suspicious`/`high`, evidence codes. Its answer is kept unchanged.
+2. The SMS module's own extractor lists the links (`normalize_text(text).urls`).
+   That is the same list behind its `URL_PRESENT` code; its Kotlin copy on the
+   phone uses the same pattern.
+3. The bridge tidies each link. The extractor keeps the sentence's punctuation
+   (`github.com/login.`, `bit.ly/3xYzAbc,`, `...?id=88213.`), so that is
+   removed. Then duplicates are dropped and at most 10 links are checked.
+4. This detector checks the links, either in the same process or over
+   `POST /predict`. Both give the same answers (checked).
+5. The rule: **the link check can only raise the message's risk, never lower
+   it.**
+
+| Link answer | Message risk | Evidence code added |
+|---|---|---|
+| any link phishing | raised to `high`, high-risk advice | `URL_FLAGGED_PHISHING` (+ `URL_KNOWN_THREAT` if a threat list matched) |
+| any link uncertain | unchanged | `URL_CHECK_UNCERTAIN` |
+| a link not checked (service down, unparseable, over the cap) | unchanged; **not** read as safe | `URL_CHECK_UNAVAILABLE` |
+| every link likely safe | unchanged: a clean link does not make "share your OTP" safe | `URL_NOT_FLAGGED` |
+
+Set up once in this project's venv. The SMS model was saved with scikit-learn
+1.9.1, the same version as this project:
+
+```powershell
+pip install -e <path>\sms-detection --no-deps
+python -m src.integration.sms_bridge "Your KYC is pending. Update at https://sbi-kyc-verify.in/login" --sender +919876543210
+python -m src.integration.sms_bridge --file messages.json        # [{"text": "...", "sender": "..."}]
+Get-Content msg.txt -Raw | python -m src.integration.sms_bridge  # from stdin: no quoting trouble
+python -m src.integration.sms_bridge --file messages.json --api http://127.0.0.1:8123   # via the running API
+```
+
+The output has three parts:
+- `sms`: the SMS module's answer, untouched;
+- `links`: per link `display_url`, `decision`, `risk_score`, `source`, `reasons`, `pending`;
+- `combined`: `risk_level`, `raised_by_links`, evidence codes and advice codes, for the UI and the Llama explanation.
+
+It holds **no message text**. Links appear only through `redact_url`: query
+values, passwords and `#fragments` are removed. Links are never opened.
+
+**Live run** (2026-11-23, laptop): the team's real SMS model and this project's
+real model, on six messages written for the demo. These are not real people's
+messages and not an accuracy measurement.
+
+| Message | SMS module alone | Link check | Combined |
+|---|---|---|---|
+| KYC pending, `https://sbi-kyc-verify.in/login` | smishing / high | phishing (model 0.926) | high |
+| Parcel on hold, pay at `www.indiapost-redelivery.top/pay?id=…` | smishing / high | uncertain (0.359) | high |
+| "Here are the photos", `http://paypal-account-verify.xyz/signin.php` | spam / **low** | phishing (0.997) | **high (raised)** |
+| Airtel bill, `https://www.airtel.in/pay` | spam / low | uncertain (0.238) | low |
+| OTP, no link | ham / low | no links | low |
+| `bit.ly/3xYzAbc`, `github.com/login` | spam / low | uncertain (shortener rule; popular-website guard) | low |
+
+The third row shows why the modules are connected. Alone, the SMS module
+filed that scam as quiet spam, and the link check caught it.
+
+Tests ([tests/test_sms_bridge.py](tests/test_sms_bridge.py), 45):
+- link tidying;
+- every row of the rule;
+- links over the cap, an unparseable link, a pending Google answer;
+- no message text or query values in the output;
+- the HTTP client: retry on 503 with a capped `Retry-After`, errors, timeouts, bad answers, redirects not followed, proxies ignored;
+- the bridge through the real API app and in process;
+- the real SMS module (skipped when it is not installed);
+- the command line.
+
+**On the phone (Android).** The SMS app is Kotlin, and it deliberately has
+**no `INTERNET` permission**; its `verify_apk.ps1` fails if one appears.
+Android needs that permission even for `127.0.0.1`. Two ways to connect:
+
+1. **Quick (demo):** the app sends only the extracted links to this API
+   running in Termux on the same phone (`http://127.0.0.1:8000/predict`). It
+   needs `INTERNET` plus a network-security config that allows plain HTTP to
+   `127.0.0.1` only. That is a team decision, because it changes the app's
+   privacy promise from "cannot" to "does not".
+2. **Proper (PoC, due 5 Feb 2027):** run this model inside the app. Export the
+   char-CNN with ExecuTorch (the SMS and NIDS apps already use
+   `executorch-android` 1.5.1), and port the URL normaliser, features and
+   decision rules to Kotlin. Check it against Python with parity files, the
+   way the SMS module did for its model.
+
+### NIDS (reviewed 2026-11-23, [Android-nids](https://github.com/vishwajeet-singh-bhati/Android-nids) at `2d805bd`)
+
+How it works:
+- On the rooted phone it runs `tcpdump` and keeps the first 768 bytes of each
+  packet (`TsanetCaptureService`).
+- It turns them into **numbers only**: 32 flow values and 115 history values.
+  A gate and a diagnosis model then name the pattern: Bot, BruteForce, DDoS,
+  DoS, PortScan, WebAttack or Unclassified.
+- IPs and ports only group packets. HTTP headers give numeric facts only, and
+  TLS is never decrypted.
+- It reads **no hostnames, DNS names or URLs**, so today it has nothing to
+  send to a link checker. Its alerts are about connection behaviour, a
+  different threat from phishing.
+
+How to connect it:
+
+1. **NIDS side, new:** a small hostname reader.
+   - **DNS query names**: UDP port 53 packets fit within 768 bytes.
+   - **The HTTP `Host` header**: the NIDS already parses the header block.
+   - Optionally **TLS SNI**: usually in the first packet, but Chrome's large
+     post-quantum ClientHello with shuffled extensions can push it past 768
+     bytes. Measure before relying on it.
+
+   Android's Private DNS (DNS over TLS) and browser DNS-over-HTTPS hide
+   lookups, so coverage will be partial.
+2. **Send** the hostnames in batches as `{"urls": [...], "input_type": "domain"}`.
+3. **Today's answer for a hostname:** `phishing` when it is on a threat list,
+   otherwise `uncertain` (source `rule`, "no hostname model yet"). A
+   hostname-level model needs safe hostnames with subdomains in the data
+   first; see Phase 2.
+4. **Keep the verdicts separate.** A phishing hostname and an intrusion
+   pattern are different findings. The team plan says unrelated network
+   events must not be merged into one score. They can share a timeline, linked
+   by the DNS answer (hostname → IP) and the flow's destination IP.
+5. **Same Android limit.** The NIDS app also has no `INTERNET` permission,
+   with the same two options as the SMS app.
+
+### Phone export for the combined APK (done)
+
+Vishwajeet's NIDS app will host all three detectors. The link checker goes in as an ExecuTorch
+model plus data files, ported to Kotlin and checked against reference answers:
+
+```powershell
+python -m src.deploy.mobile_export                     # -> dist\mobile_<model_version>\
+# in a separate venv with executorch==1.5.0 + torch==2.14.1 (the NIDS app's export pair):
+$env:FLATC_EXECUTABLE = "<venv>\Lib\site-packages\executorch\data\bin\flatc.exe"   # ExecuTorch 1.5.0 Windows bug
+python -m src.deploy.mobile_export pte --dir dist\mobile_full_url-edb8f2cc8642
+```
+
+The folder holds:
+- `url_cnn.pte` (381 KB, XNNPACK): ids int64[1,256] + features float32[1,27] → logit;
+- `ngram_lr.bin`: 300,000 ASCII terms, idf and weights;
+- `url_model.json`: tokenizer, feature order, scaler, calibrator, thresholds, rules, threat-list queries;
+- the shortener and popular lists;
+- the exact Public Suffix List snapshot;
+- the threat list;
+- `reference.jsonl`.
+
+`reference.jsonl` has every step's value for 2,077 inputs: the 2,048 benchmark links, 27
+edge cases and 2 threat-list hits. That way each Kotlin step can be checked on its own.
+
+Checks (2026-11-23):
+- the written-out n-gram formula matches scikit-learn to within 2.8e-7;
+- the fixed 256-length input matches the service to within 1.4e-7 in probability;
+- the `.pte` run by ExecuTorch matches PyTorch to within 5.7e-6 in the logit, with **0 decision changes** on 2,066 scored links.
+
+Tests: [tests/test_mobile_export.py](tests/test_mobile_export.py) (8; the `.pte` test needs
+ExecuTorch).
+
+The handoff zip `dist\bharat_ai_handoff_2026-11-23.zip` (46.6 MB) adds:
+- Sumit's SMS detector: Kotlin core, Android sources, models, Tier-2 `.pte`;
+- the combine rule with its test cases;
+- the walkthrough page;
+- a `START_HERE.md` guide for Vishwajeet.
+
+The NIDS already runs **Llama 3.2-1B on ExecuTorch** in its own process
+(`LlamaWorkerService`). The team's explanation layer can reuse it for link
+results. The input is `combined.evidence`; Llama may phrase the result, but
+must not change it.
+
 ## Training on a GPU PC (Windows)
 
 1. Clone the repo, create a 64-bit venv, run `pip install -r requirements.txt`,
@@ -958,6 +1267,18 @@ logs/          Local logs (ignored by Git)
 models/        Local model files
 scripts/       Development and environment-check scripts
 src/           Application source package
+  api/           HTTP API (FastAPI): app, schemas, config, metrics
+  data/          feed downloads, Common Crawl sample, dataset build and split
+  deploy/        device package for Arm test devices; phone export (ExecuTorch + reference answers)
+  inference/     model bundle, runtime, decision engine, predictor, service, benchmarks
+  integration/   connections to the team's modules (SMS scam detector bridge)
+  intelligence/  threat-intel database, cache, Google Safe Browsing, background checks
+  models/        char-CNN, n-gram model, calibration
+  preprocessing/ URL normalizer, tokenizer, structural features
+  training/      training, calibration, ensembles, error inspection
+  utils/         shared helpers (URL redaction for logs)
+config/        JSON settings (api, inference, cache, threat intel, Safe Browsing)
+reports/       evaluation, benchmark and parity reports
 tests/         Test package
 ```
 

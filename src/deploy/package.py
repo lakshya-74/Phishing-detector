@@ -45,6 +45,11 @@ tldextract>=5.1
 idna>=3.6
 httpx>=0.27
 pytest>=8.0
+# HTTP API (python -m src.api.app) and its tests
+fastapi>=0.162
+starlette>=1.10
+uvicorn>=0.54
+pydantic>=2.14
 """
 
 DEVICE_README = """\
